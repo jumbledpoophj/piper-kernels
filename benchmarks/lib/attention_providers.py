@@ -196,8 +196,11 @@ def _piper_attention_jit_functions(
     target: AcceleratorTarget,
     *,
     sort_value_rows: bool,
+    use_sm89_d128_specialization: bool,
 ) -> dict[str, object]:
-    qk_kernels = _qk_jit_functions(target)
+    qk_kernels = (
+        {} if use_sm89_d128_specialization else _qk_jit_functions(target)
+    )
     if sort_value_rows and target.is_cuda_capability(12):
         qk_kernels["quantize-key-per-block"] = (
             piper_attention_backend._quantize_ordered_key_per_block_kernel
@@ -207,7 +210,11 @@ def _piper_attention_jit_functions(
         "kv-mean-finish": piper_attention_backend._kv_mean_finalize_kernel,
         **qk_kernels,
         "quantize-value-per-key": piper_attention_backend._quantize_value_per_key_kernel,
-        "attention": piper_attention_backend._piper_attention_kernel,
+        "attention": (
+            piper_attention_backend._piper_attention_sm89_d128_kernel
+            if use_sm89_d128_specialization
+            else piper_attention_backend._piper_attention_kernel
+        ),
     }
     if sort_value_rows:
         kernels["centered-value-row-range"] = (
@@ -236,20 +243,56 @@ def _make_piper_attention_provider(
     )
     launch_configuration: dict[str, object] = {}
     if query.device.type == "cuda":
-        schedule = piper_backend._default_piper_launch_schedule(
+        schedule = piper_attention_backend._default_piper_launch_schedule(
             query,
             key,
             config.is_causal,
         )
         launch_configuration = {
             "block_m": schedule.block_m,
-            "block_n": piper_backend._BLOCK_N,
+            "block_n": piper_attention_backend._BLOCK_N,
             "num_warps": schedule.num_warps,
             "num_stages": schedule.num_stages,
             "load_path": (
                 "tensor-descriptor" if schedule.use_tensor_descriptors else "pointer"
             ),
         }
+    sm89_long_d128 = (
+        target.is_cuda_capability(8, 9)
+        and query.shape[-1] == 128
+        and query.shape[2] >= 8192
+        and key.shape[2] >= 8192
+    )
+    use_sm89_d128_specialization = (
+        sm89_long_d128
+        and query.shape[2] == key.shape[2]
+        and query.shape[2] % 128 == 0
+        and key.shape[2] % piper_attention_backend._BLOCK_N == 0
+        and native_uint8
+        and launch_configuration.get("block_m") == 128
+    )
+    direct_probability_conversion = (
+        use_sm89_d128_specialization
+        and not config.is_causal
+        and key.shape[2] >= 32768
+    )
+    if use_sm89_d128_specialization:
+        launch_configuration.update(
+            {
+                "attention_specialization": "sm89_d128",
+                "pv_accumulation": "split_fp16",
+                "value_scale": "per_64_key_block",
+                "query_quantization_placement": (
+                    "attention_cta" if key.shape[2] < 32768 else "qkv_preparation_cta"
+                ),
+                "key_value_quantization": "fused",
+                "probability_conversion": (
+                    "packed_truncate"
+                    if direct_probability_conversion
+                    else "packed_round_nearest"
+                ),
+            }
+        )
 
     def prepare() -> object:
         return piper_attention_backend._prepare_piper_attention(
@@ -277,10 +320,16 @@ def _make_piper_attention_provider(
             **config.as_dict(),
             "implementation": "pure_triton",
             "algorithm": "piper_attention",
-            "qk_quantization": qk_quantization_granularity(target),
+            "qk_quantization": (
+                "per_row"
+                if use_sm89_d128_specialization
+                else qk_quantization_granularity(target)
+            ),
             "probability_dtype": "uint8",
             "value_dtype": "int8",
-            "value_scale": "per_key",
+            "value_scale": (
+                "per_64_key_block" if use_sm89_d128_specialization else "per_key"
+            ),
             "center_value": center_value,
             "value_row_order": "centered_range_ascending" if sort_value_rows else "original",
             "mixed_sign_mma": "native" if native_uint8 else "affine_proxy",
@@ -289,6 +338,7 @@ def _make_piper_attention_provider(
         triton_jit_functions=_piper_attention_jit_functions(
             target,
             sort_value_rows=sort_value_rows,
+            use_sm89_d128_specialization=use_sm89_d128_specialization,
         ),
     )
 

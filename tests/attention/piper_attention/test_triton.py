@@ -27,6 +27,10 @@ def _sm120_available() -> bool:
     return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] == 12
 
 
+def _sm89_available() -> bool:
+    return torch.cuda.is_available() and torch.cuda.get_device_capability() == (8, 9)
+
+
 def _qk_quantization() -> Literal["per_thread", "per_warp"]:
     return "per_warp" if torch.cuda.get_device_capability()[0] == 12 else "per_thread"
 
@@ -48,10 +52,13 @@ pytestmark = [
         (2048, 64, False, 128, (128, 4, 3)),
         (512, 128, False, 32, (32, 4, 3)),
         (2048, 128, False, 128, (128, 4, 2)),
+        (131072, 128, False, 128, (128, 4, 2)),
         (256, 64, True, 32, (32, 4, 3)),
         (512, 64, True, 32, (64, 4, 4)),
         (512, 128, True, 32, (32, 4, 3)),
         (1024, 128, True, 64, (128, 8, 4)),
+        (8192, 128, True, 128, (128, 4, 3)),
+        (32768, 128, True, 128, (128, 4, 2)),
     ],
 )
 def test_sm89_schedule_matches_offline_tuning_policy(
@@ -203,6 +210,80 @@ def test_centering_improves_biased_value_quality() -> None:
     centered_mse = (centered.float() - expected.float()).square().mean()
     maximum_ratio = 0.25 if torch.cuda.get_device_capability() == (8, 9) else 0.2
     assert centered_mse < uncentered_mse * maximum_ratio
+
+
+@pytest.mark.skipif(not _sm89_available(), reason="long specialization targets SM89")
+@pytest.mark.parametrize("is_causal", [False, True])
+def test_sm89_d128_specialization_matches_sdpa(is_causal: bool) -> None:
+    torch.manual_seed(60 + is_causal)
+    sequence = 8192
+    query = torch.randn(1, 8, sequence, 128, device="cuda", dtype=torch.bfloat16)
+    key = torch.randn_like(query)
+    value = torch.randn_like(query)
+
+    with torch.no_grad():
+        prepared = _prepare_piper_attention(
+            query,
+            key,
+            value,
+            128**-0.5,
+            is_causal,
+            True,
+        )
+        actual = _launch_piper_attention(prepared)
+        expected = torch.nn.functional.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            is_causal=is_causal,
+        )
+
+    error = actual.float() - expected.float()
+    sqnr = 10 * torch.log10(expected.float().square().mean() / error.square().mean())
+    assert prepared.use_sm89_d128_specialization
+    assert prepared.block_value_scale
+    assert prepared.fuse_query_quantization
+    assert prepared.use_packed_probability_conversion
+    assert torch.isfinite(actual).all()
+    assert error.abs().mean().item() < 0.002
+    assert sqnr.item() > 25.0
+
+
+@pytest.mark.skipif(not _sm89_available(), reason="packed UINT8 conversion targets SM89")
+@pytest.mark.parametrize("round_probability_codes", [False, True])
+def test_packed_uint8_probability_conversion_matches_standard(
+    round_probability_codes: bool,
+) -> None:
+    torch.manual_seed(62)
+    sequence = 8192
+    query = torch.randn(1, 1, sequence, 128, device="cuda", dtype=torch.bfloat16)
+    key = torch.randn_like(query)
+    value = torch.randn_like(query)
+    arguments = (query, key, value, 128**-0.5, False, True)
+
+    with torch.no_grad():
+        standard = _prepare_piper_attention(
+            *arguments,
+            round_probability_codes=round_probability_codes,
+            use_packed_probability_conversion=False,
+            block_m=128,
+            fuse_query_quantization=False,
+            fuse_query_with_key_value=True,
+        )
+        packed = _prepare_piper_attention(
+            *arguments,
+            round_probability_codes=round_probability_codes,
+            use_packed_probability_conversion=True,
+            block_m=128,
+            fuse_query_quantization=False,
+            fuse_query_with_key_value=True,
+        )
+        standard_output = _launch_piper_attention(standard)
+        packed_output = _launch_piper_attention(packed)
+
+    assert not standard.use_packed_probability_conversion
+    assert packed.use_packed_probability_conversion
+    torch.testing.assert_close(packed_output, standard_output, atol=0.0, rtol=0.0)
 
 
 @pytest.mark.skipif(not _sm120_available(), reason="ordered grouped-QK path targets SM12x")

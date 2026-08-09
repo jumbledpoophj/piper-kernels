@@ -130,8 +130,10 @@ def piper_attention(
     to ``head_dim**-0.5``.
 
     The algorithm retains Sage-style INT8 QK and FP32 online softmax, then
-    quantizes each V row with its own signed-INT8 scale and folds that scale
-    into a UINT8 probability operand. ``center_value=True`` subtracts the
+    normally quantizes each V row with its own signed-INT8 scale and folds that
+    scale into a UINT8 probability operand. Long, aligned SM89 D128
+    self-attention instead shares a centered V scale across each 64-key tile
+    and uses a split FP16 numerator recurrence. ``center_value=True`` subtracts the
     sequence-wide per-feature V mean before quantization and restores it in
     the epilogue. ``None`` enables centering in the measured SM89 region and
     in the long, non-causal SM12x D128 region.

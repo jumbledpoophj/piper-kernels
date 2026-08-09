@@ -30,6 +30,11 @@ from piper_kernels.attention.piper_attention import triton as piper_attention_ba
 from piper_kernels.attention.piper_attention.dispatch import _default_center_value
 
 _SCHEDULES = ("pointer", "tensor-descriptor")
+_PV_MODES = ("full-fp32", "full-fp16", "split-fp32", "split-fp16")
+_LOOP_LICM_MODES = ("disabled", "enabled")
+_VALUE_SCALE_COORDINATES = ("exact-log", "block")
+_QUERY_PREP_MODES = ("production", "kv", "attention")
+_PROBABILITY_CONVERSIONS = ("standard", "packed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,13 +44,25 @@ class _PiperSchedule:
     num_warps: int
     num_stages: int
     native_uint8: bool
+    pv_mode: str
+    reverse_causal_blocks: bool
+    loop_num_stages: int | None
+    disable_loop_licm: bool
+    value_scale_coordinate: str
+    query_prep: str
+    probability_conversion: str
 
     @property
     def name(self) -> str:
         mma = "native" if self.native_uint8 else "affine"
+        loop_stages = "default" if self.loop_num_stages is None else self.loop_num_stages
+        licm = "nolicm" if self.disable_loop_licm else "licm"
+        reverse = "-reverse" if self.reverse_causal_blocks else ""
         return (
             f"{self.load_path}-m{self.block_m}-w{self.num_warps}-"
-            f"s{self.num_stages}-{mma}"
+            f"s{self.num_stages}-{mma}-{self.pv_mode}-"
+            f"loop{loop_stages}-{licm}-{self.value_scale_coordinate}-"
+            f"q{self.query_prep}-p{self.probability_conversion}{reverse}"
         )
 
 
@@ -101,6 +118,54 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="UINT8 x INT8 formulation to search",
     )
     parser.add_argument(
+        "--pv-mode",
+        choices=_PV_MODES,
+        nargs="+",
+        default=["full-fp32"],
+        help="PV accumulator layouts to search",
+    )
+    parser.add_argument(
+        "--reverse-causal-blocks",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="launch the longest causal query blocks first",
+    )
+    parser.add_argument(
+        "--loop-num-stages",
+        type=int,
+        choices=(0, 1, 2, 3, 4),
+        nargs="+",
+        help="tl.range pipeline depths to search; zero follows launch stages",
+    )
+    parser.add_argument(
+        "--loop-licm",
+        choices=_LOOP_LICM_MODES,
+        nargs="+",
+        default=["disabled"],
+        help="search with loop-invariant-code motion disabled or enabled",
+    )
+    parser.add_argument(
+        "--value-scale-coordinate",
+        choices=_VALUE_SCALE_COORDINATES,
+        nargs="+",
+        default=["exact-log"],
+        help="search exact-log or per-block V-scale probability coordinates",
+    )
+    parser.add_argument(
+        "--query-prep",
+        choices=_QUERY_PREP_MODES,
+        nargs="+",
+        default=["production"],
+        help="search Q/K/V-fused or attention-fused query quantization",
+    )
+    parser.add_argument(
+        "--probability-conversion",
+        choices=_PROBABILITY_CONVERSIONS,
+        nargs="+",
+        default=["standard"],
+        help="search ordinary or packed PTX UINT8 probability conversion",
+    )
+    parser.add_argument(
         "--phase",
         type=TuningPhase,
         choices=tuple(TuningPhase),
@@ -148,6 +213,9 @@ def _make_candidate(
                 "the tensor-descriptor candidate requires block_m=128"
             )
         query, key, value = inputs
+        query_prep = schedule.query_prep
+        fuse_query_quantization = None if query_prep == "production" else query_prep == "attention"
+        fuse_query_with_key_value = None if query_prep == "production" else query_prep == "kv"
 
         def prepare() -> object:
             return piper_attention_backend._prepare_piper_attention(
@@ -163,6 +231,17 @@ def _make_candidate(
                 block_m=schedule.block_m,
                 num_warps=schedule.num_warps,
                 num_stages=schedule.num_stages,
+                split_pv_head_dim=schedule.pv_mode.startswith("split"),
+                scaled_fp16_numerator=schedule.pv_mode.endswith("fp16"),
+                reverse_causal_blocks=schedule.reverse_causal_blocks,
+                loop_num_stages=schedule.loop_num_stages,
+                disable_loop_licm=schedule.disable_loop_licm,
+                block_value_scale=schedule.value_scale_coordinate == "block",
+                fuse_query_quantization=fuse_query_quantization,
+                fuse_query_with_key_value=fuse_query_with_key_value,
+                use_packed_probability_conversion=(
+                    schedule.probability_conversion == "packed"
+                ),
             )
 
         def run(prepared: object) -> torch.Tensor:
@@ -190,6 +269,13 @@ def _make_candidate(
             "center_value": center_value,
             "value_row_order": ("centered_range_ascending" if sort_value_rows else "original"),
             "mixed_sign_mma": "native" if schedule.native_uint8 else "affine_proxy",
+            "pv_mode": schedule.pv_mode,
+            "reverse_causal_blocks": schedule.reverse_causal_blocks,
+            "loop_num_stages": schedule.loop_num_stages,
+            "disable_loop_licm": schedule.disable_loop_licm,
+            "value_scale_coordinate": schedule.value_scale_coordinate,
+            "query_prep": schedule.query_prep,
+            "probability_conversion": schedule.probability_conversion,
         },
         make_provider=make_provider,
     )
@@ -254,6 +340,7 @@ def _main(argv: Sequence[str] | None = None) -> None:
         "affine": (False,),
         "both": (True, False),
     }[args.mixed_sign]
+    loop_stage_options = tuple(args.loop_num_stages or (None,))
     candidates = tuple(
         _make_candidate(
             _PiperSchedule(
@@ -262,6 +349,13 @@ def _main(argv: Sequence[str] | None = None) -> None:
                 num_warps,
                 num_stages,
                 native_uint8,
+                pv_mode,
+                args.reverse_causal_blocks,
+                num_stages if loop_num_stages == 0 else loop_num_stages,
+                loop_licm == "disabled",
+                value_scale_coordinate,
+                query_prep,
+                probability_conversion,
             ),
             inputs,
             scale=scale,
@@ -276,6 +370,12 @@ def _main(argv: Sequence[str] | None = None) -> None:
         for num_warps in args.num_warps
         for num_stages in args.num_stages
         for native_uint8 in native_options
+        for pv_mode in args.pv_mode
+        for loop_num_stages in loop_stage_options
+        for loop_licm in args.loop_licm
+        for value_scale_coordinate in args.value_scale_coordinate
+        for query_prep in args.query_prep
+        for probability_conversion in args.probability_conversion
     )
     expected = torch.nn.functional.scaled_dot_product_attention(
         query,
