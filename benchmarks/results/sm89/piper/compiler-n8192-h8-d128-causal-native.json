@@ -1,0 +1,392 @@
+[
+  {
+    "schema_version": 1,
+    "record_type": "triton_compiler",
+    "provider": "piper",
+    "configuration": {
+      "dtype": "bfloat16",
+      "is_causal": true,
+      "scale": null,
+      "qkv_layout": "BHSD",
+      "value_bias_amplitude": 0.0,
+      "implementation": "pure_triton",
+      "algorithm": "piper_attention",
+      "qk_quantization": "per_thread",
+      "probability_dtype": "uint8",
+      "value_dtype": "int8",
+      "value_scale": "per_key",
+      "center_value": true,
+      "value_row_order": "original",
+      "mixed_sign_mma": "native",
+      "block_m": 128,
+      "block_n": 64,
+      "num_warps": 8,
+      "num_stages": 4,
+      "load_path": "pointer"
+    },
+    "environment": {
+      "captured_at_utc": "2026-08-08T19:05:29.784791+00:00",
+      "python_version": "3.14.7",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "torch_version": "2.12.1+cu130",
+      "triton_version": "3.7.1.post27",
+      "accelerator_backend": "cuda",
+      "accelerator_runtime_version": "13.0",
+      "accelerator_driver_version": "596.49",
+      "gpu_name": "NVIDIA GeForce RTX 4070 Ti SUPER",
+      "gpu_architecture": "SM89",
+      "gpu_index": 0,
+      "git_revision": "9736eca202a3567c1ba5dd8070a614361ac06ad5",
+      "git_dirty": true
+    },
+    "specializations": [
+      {
+        "kernel": "kv-mean-partial",
+        "specialization_index": 0,
+        "specialization_fingerprint": "2cb30786c303a01f",
+        "specialization_key": "[('*bf16', 'D'), ('*bf16', 'D'), ('*fp32', 'D'), ('*fp32', 'D'), ('i32', 'D'), ('i32', ''), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('constexpr', True), ('constexpr', 8), ('constexpr', 128), ('constexpr', 1024), ('constexpr', 64), ('constexpr', 64), '(\"custom_pipeline\", 75c827b2d4d0f87b1595ab70214bdb35d1d91e1cb6cc58897938e785a1088739)']{'num_warps': 4, 'debug': False, 'instrumentation_mode': ''}",
+        "device_index": 0,
+        "compiler_backend": "cuda",
+        "target_architecture": "sm89",
+        "registers_per_thread": 48,
+        "spills": 0,
+        "shared_memory_bytes_per_workgroup": 1024,
+        "warps_per_workgroup": 4,
+        "stages": 3,
+        "ctas_per_cluster": 1,
+        "residency_ceiling": {
+          "resident_workgroups_per_compute_unit": 10,
+          "resident_warps_per_compute_unit": 40,
+          "limiting_resources": [
+            "registers"
+          ],
+          "workgroup_limits": {
+            "registers": 10,
+            "shared_memory": 100,
+            "threads": 12
+          }
+        },
+        "ptx": {
+          "instruction_count": 500,
+          "families": {
+            "add": 146,
+            "and": 16,
+            "bar": 10,
+            "bfe": 1,
+            "bra": 1,
+            "cvt": 66,
+            "ld": 40,
+            "ldmatrix": 2,
+            "mad": 13,
+            "mov": 90,
+            "mul": 14,
+            "neg": 1,
+            "or": 8,
+            "ret": 1,
+            "setp": 9,
+            "shfl": 40,
+            "shl": 12,
+            "shr": 2,
+            "st": 26,
+            "xor": 2
+          },
+          "mma_opcodes": {}
+        },
+        "sass": null
+      },
+      {
+        "kernel": "kv-mean-finish",
+        "specialization_index": 0,
+        "specialization_fingerprint": "a375b23c8a04c315",
+        "specialization_key": "[('*fp32', 'D'), ('*fp32', 'D'), ('*fp32', 'D'), ('*fp32', 'D'), ('i32', 'D'), ('i32', ''), ('constexpr', True), ('constexpr', 128), ('constexpr', 8), ('constexpr', 64), '(\"custom_pipeline\", 75c827b2d4d0f87b1595ab70214bdb35d1d91e1cb6cc58897938e785a1088739)']{'num_warps': 4, 'debug': False, 'instrumentation_mode': ''}",
+        "device_index": 0,
+        "compiler_backend": "cuda",
+        "target_architecture": "sm89",
+        "registers_per_thread": 27,
+        "spills": 0,
+        "shared_memory_bytes_per_workgroup": 1024,
+        "warps_per_workgroup": 4,
+        "stages": 3,
+        "ctas_per_cluster": 1,
+        "residency_ceiling": {
+          "resident_workgroups_per_compute_unit": 12,
+          "resident_warps_per_compute_unit": 48,
+          "limiting_resources": [
+            "threads"
+          ],
+          "workgroup_limits": {
+            "registers": 18,
+            "shared_memory": 100,
+            "threads": 12
+          }
+        },
+        "ptx": {
+          "instruction_count": 151,
+          "families": {
+            "add": 31,
+            "and": 11,
+            "bar": 9,
+            "bfe": 1,
+            "cvt": 1,
+            "div": 8,
+            "ld": 20,
+            "ldmatrix": 2,
+            "mad": 1,
+            "mov": 14,
+            "mul": 2,
+            "or": 3,
+            "ret": 1,
+            "setp": 5,
+            "shfl": 16,
+            "shl": 9,
+            "shr": 1,
+            "st": 16
+          },
+          "mma_opcodes": {}
+        },
+        "sass": null
+      },
+      {
+        "kernel": "quantize-query-per-thread",
+        "specialization_index": 0,
+        "specialization_fingerprint": "ddfd058a3a746a67",
+        "specialization_key": "[('*bf16', 'D'), ('*i8', 'D'), ('*fp32', 'D'), ('i32', 'D'), ('fp32', None), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('constexpr', 128), '(\"custom_pipeline\", 75c827b2d4d0f87b1595ab70214bdb35d1d91e1cb6cc58897938e785a1088739)']{'num_warps': 4, 'debug': False, 'instrumentation_mode': ''}",
+        "device_index": 0,
+        "compiler_backend": "cuda",
+        "target_architecture": "sm89",
+        "registers_per_thread": 20,
+        "spills": 0,
+        "shared_memory_bytes_per_workgroup": 16,
+        "warps_per_workgroup": 4,
+        "stages": 3,
+        "ctas_per_cluster": 1,
+        "residency_ceiling": {
+          "resident_workgroups_per_compute_unit": 12,
+          "resident_warps_per_compute_unit": 48,
+          "limiting_resources": [
+            "threads"
+          ],
+          "workgroup_limits": {
+            "registers": 25,
+            "shared_memory": 6400,
+            "threads": 12
+          }
+        },
+        "ptx": {
+          "instruction_count": 155,
+          "families": {
+            "abs": 4,
+            "add": 11,
+            "and": 12,
+            "bar": 2,
+            "cvt": 16,
+            "div": 5,
+            "ld": 16,
+            "mad": 7,
+            "max": 14,
+            "min": 4,
+            "mov": 15,
+            "mul": 10,
+            "or": 4,
+            "prmt": 3,
+            "ret": 1,
+            "selp": 4,
+            "setp": 10,
+            "shfl": 7,
+            "shl": 4,
+            "shr": 2,
+            "st": 4
+          },
+          "mma_opcodes": {}
+        },
+        "sass": null
+      },
+      {
+        "kernel": "quantize-key-per-thread",
+        "specialization_index": 0,
+        "specialization_fingerprint": "dec0f6a17b167ba9",
+        "specialization_key": "[('*bf16', 'D'), ('*fp32', 'D'), ('*i8', 'D'), ('*fp32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('constexpr', 8), ('constexpr', 128), '(\"custom_pipeline\", 75c827b2d4d0f87b1595ab70214bdb35d1d91e1cb6cc58897938e785a1088739)']{'num_warps': 4, 'debug': False, 'instrumentation_mode': ''}",
+        "device_index": 0,
+        "compiler_backend": "cuda",
+        "target_architecture": "sm89",
+        "registers_per_thread": 40,
+        "spills": 0,
+        "shared_memory_bytes_per_workgroup": 512,
+        "warps_per_workgroup": 4,
+        "stages": 3,
+        "ctas_per_cluster": 1,
+        "residency_ceiling": {
+          "resident_workgroups_per_compute_unit": 12,
+          "resident_warps_per_compute_unit": 48,
+          "limiting_resources": [
+            "registers",
+            "threads"
+          ],
+          "workgroup_limits": {
+            "registers": 12,
+            "shared_memory": 200,
+            "threads": 12
+          }
+        },
+        "ptx": {
+          "instruction_count": 384,
+          "families": {
+            "abs": 16,
+            "add": 31,
+            "and": 14,
+            "bar": 4,
+            "bfe": 1,
+            "cvt": 52,
+            "div": 17,
+            "ld": 22,
+            "mad": 9,
+            "max": 38,
+            "min": 16,
+            "mov": 40,
+            "mul": 8,
+            "or": 6,
+            "prmt": 12,
+            "ret": 1,
+            "selp": 32,
+            "setp": 22,
+            "shfl": 7,
+            "shl": 9,
+            "shr": 2,
+            "st": 5,
+            "sub": 16,
+            "xor": 4
+          },
+          "mma_opcodes": {}
+        },
+        "sass": null
+      },
+      {
+        "kernel": "quantize-value-per-key",
+        "specialization_index": 0,
+        "specialization_fingerprint": "e310a258d991a771",
+        "specialization_key": "[('*bf16', 'D'), ('*fp32', 'D'), ('*i32', 'D'), ('*fp32', 'D'), ('*fp16', 'D'), ('*i16', 'D'), ('*i8', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('constexpr', 1), ('constexpr', True), ('constexpr', False), ('constexpr', False), ('constexpr', 8), ('constexpr', 128), ('constexpr', 64), '(\"custom_pipeline\", 75c827b2d4d0f87b1595ab70214bdb35d1d91e1cb6cc58897938e785a1088739)']{'num_warps': 4, 'debug': False, 'instrumentation_mode': ''}",
+        "device_index": 0,
+        "compiler_backend": "cuda",
+        "target_architecture": "sm89",
+        "registers_per_thread": 104,
+        "spills": 0,
+        "shared_memory_bytes_per_workgroup": 8192,
+        "warps_per_workgroup": 4,
+        "stages": 3,
+        "ctas_per_cluster": 1,
+        "residency_ceiling": {
+          "resident_workgroups_per_compute_unit": 4,
+          "resident_warps_per_compute_unit": 16,
+          "limiting_resources": [
+            "registers"
+          ],
+          "workgroup_limits": {
+            "registers": 4,
+            "shared_memory": 12,
+            "threads": 12
+          }
+        },
+        "ptx": {
+          "instruction_count": 1556,
+          "families": {
+            "abs": 64,
+            "add": 202,
+            "and": 24,
+            "bar": 7,
+            "bfe": 2,
+            "bra": 8,
+            "cvt": 149,
+            "div": 72,
+            "fma": 96,
+            "ld": 43,
+            "mad": 15,
+            "max": 152,
+            "min": 64,
+            "mov": 124,
+            "mul": 47,
+            "or": 16,
+            "prmt": 16,
+            "ret": 1,
+            "selp": 152,
+            "setp": 95,
+            "shfl": 32,
+            "shl": 15,
+            "shr": 3,
+            "st": 42,
+            "sub": 72,
+            "xor": 43
+          },
+          "mma_opcodes": {}
+        },
+        "sass": null
+      },
+      {
+        "kernel": "attention",
+        "specialization_index": 0,
+        "specialization_fingerprint": "5f9e18a3648c979f",
+        "specialization_key": "[('*i8', 'D'), ('*i8', 'D'), ('*i8', 'D'), ('*fp32', 'D'), ('*fp32', 'D'), ('*fp32', 'D'), ('*fp16', 'D'), ('*i16', 'D'), ('*fp32', 'D'), ('*bf16', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('constexpr', 0), ('constexpr', True), ('constexpr', False), ('constexpr', True), ('constexpr', False), ('constexpr', False), ('constexpr', True), ('constexpr', True), ('constexpr', False), ('constexpr', 8), ('constexpr', 128), ('constexpr', 128), ('constexpr', 64), ('constexpr', False), '(\"custom_pipeline\", 75c827b2d4d0f87b1595ab70214bdb35d1d91e1cb6cc58897938e785a1088739)']{'num_warps': 8, 'num_stages': 4, 'debug': False, 'instrumentation_mode': ''}",
+        "device_index": 0,
+        "compiler_backend": "cuda",
+        "target_architecture": "sm89",
+        "registers_per_thread": 255,
+        "spills": 0,
+        "shared_memory_bytes_per_workgroup": 67456,
+        "warps_per_workgroup": 8,
+        "stages": 4,
+        "ctas_per_cluster": 1,
+        "residency_ceiling": {
+          "resident_workgroups_per_compute_unit": 1,
+          "resident_warps_per_compute_unit": 8,
+          "limiting_resources": [
+            "registers",
+            "shared_memory"
+          ],
+          "workgroup_limits": {
+            "registers": 1,
+            "shared_memory": 1,
+            "threads": 6
+          }
+        },
+        "ptx": {
+          "instruction_count": 2143,
+          "families": {
+            "add": 365,
+            "and": 51,
+            "bar": 6,
+            "bfe": 5,
+            "bra": 2,
+            "cp": 78,
+            "cvt": 200,
+            "div": 64,
+            "ex2": 36,
+            "fma": 98,
+            "ld": 50,
+            "ldmatrix": 46,
+            "mad": 15,
+            "max": 38,
+            "min": 33,
+            "mma": 64,
+            "mov": 340,
+            "mul": 207,
+            "or": 77,
+            "prmt": 32,
+            "ret": 1,
+            "selp": 122,
+            "setp": 80,
+            "shfl": 16,
+            "shl": 42,
+            "shr": 3,
+            "st": 20,
+            "sub": 38,
+            "xor": 14
+          },
+          "mma_opcodes": {
+            "mma.sync.aligned.m16n8k32.row.col.satfinite.s32.s8.s8.s32": 32,
+            "mma.sync.aligned.m16n8k32.row.col.satfinite.s32.u8.s8.s32": 32
+          }
+        },
+        "sass": null
+      }
+    ]
+  }
+]

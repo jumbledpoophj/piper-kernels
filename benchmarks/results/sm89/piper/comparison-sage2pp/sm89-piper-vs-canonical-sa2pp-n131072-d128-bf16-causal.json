@@ -1,0 +1,170 @@
+[
+  {
+    "schema_version": 1,
+    "benchmark": "attention",
+    "provider": "piper",
+    "shape": {
+      "batch_size": 1,
+      "num_query_heads": 8,
+      "num_key_value_heads": 8,
+      "query_length": 131072,
+      "key_value_length": 131072,
+      "head_dim": 128
+    },
+    "configuration": {
+      "dtype": "bfloat16",
+      "is_causal": true,
+      "scale": null,
+      "qkv_layout": "BHSD",
+      "value_bias_amplitude": 0.0,
+      "implementation": "pure_triton",
+      "algorithm": "piper_attention",
+      "qk_quantization": "per_thread",
+      "probability_dtype": "uint8",
+      "value_dtype": "int8",
+      "value_scale": "per_key",
+      "center_value": true,
+      "value_row_order": "original",
+      "mixed_sign_mma": "native",
+      "block_m": 128,
+      "block_n": 64,
+      "num_warps": 8,
+      "num_stages": 4,
+      "load_path": "pointer"
+    },
+    "timings": {
+      "warmup_ms": 500,
+      "measurement_time_ms": 2000,
+      "first_call_ms": 441.429499998776,
+      "first_call_clock": "synchronized_wall",
+      "preparation": {
+        "median_ms": 2.933650000159105,
+        "p20_ms": 2.921200000491808,
+        "p80_ms": 2.956899999844609,
+        "clock": "synchronized_wall"
+      },
+      "prepared_execution": {
+        "median_ms": 233.19398498535156,
+        "p20_ms": 230.4428009033203,
+        "p80_ms": 237.0025451660156,
+        "clock": "device_event"
+      },
+      "operator_end_to_end": {
+        "median_ms": 234.16530000031344,
+        "p20_ms": 234.0016199996171,
+        "p80_ms": 234.94723999974667,
+        "clock": "synchronized_wall"
+      }
+    },
+    "quality": {
+      "mean_absolute_error": 0.00010237324750050902,
+      "max_absolute_error": 0.03125,
+      "relative_l1_error": 0.014241809025406837,
+      "relative_l2_error": 0.013607111759483814,
+      "sqnr_db": 37.32468032836914,
+      "cosine_similarity": 0.9999073147773743,
+      "actual_nonfinite_count": 0,
+      "reference_nonfinite_count": 0,
+      "nonfinite_mismatch_count": 0,
+      "saturation": {}
+    },
+    "environment": {
+      "captured_at_utc": "2026-08-08T21:30:49.831603+00:00",
+      "python_version": "3.14.7",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "torch_version": "2.12.1+cu130",
+      "triton_version": "3.7.1.post27",
+      "accelerator_backend": "cuda",
+      "accelerator_runtime_version": "13.0",
+      "accelerator_driver_version": "596.49",
+      "gpu_name": "NVIDIA GeForce RTX 4070 Ti SUPER",
+      "gpu_architecture": "SM89",
+      "gpu_index": 0,
+      "git_revision": "9736eca202a3567c1ba5dd8070a614361ac06ad5",
+      "git_dirty": true
+    },
+    "extra": {
+      "effective_tflops": 150.88142400627603
+    }
+  },
+  {
+    "schema_version": 1,
+    "benchmark": "attention",
+    "provider": "canonical-cuda-sage2pp",
+    "shape": {
+      "batch_size": 1,
+      "num_query_heads": 8,
+      "num_key_value_heads": 8,
+      "query_length": 131072,
+      "key_value_length": 131072,
+      "head_dim": 128
+    },
+    "configuration": {
+      "dtype": "bfloat16",
+      "is_causal": true,
+      "scale": null,
+      "qkv_layout": "BHSD",
+      "value_bias_amplitude": 0.0,
+      "implementation": "canonical_cuda",
+      "canonical_version": "2.2.0+cu130torch2.10.0andhigher.post5",
+      "canonical_revision": "woct0rdho/SageAttention@v2.2.0-windows.post5:3b90c0ec112b6b222db68fa160470dd492106ec0",
+      "qk_quantization": "per_thread",
+      "algorithm": "sage_attention_2pp",
+      "pv_accumulation": "fp32+fp16"
+    },
+    "timings": {
+      "warmup_ms": 500,
+      "measurement_time_ms": 2000,
+      "first_call_ms": 171.37189999994007,
+      "first_call_clock": "synchronized_wall",
+      "preparation": {
+        "median_ms": 0.003300001480965875,
+        "p20_ms": 0.0032999996619764715,
+        "p80_ms": 0.0034000004234258085,
+        "clock": "synchronized_wall"
+      },
+      "prepared_execution": {
+        "median_ms": 149.57260131835938,
+        "p20_ms": 149.24492797851562,
+        "p80_ms": 152.45311889648437,
+        "clock": "device_event"
+      },
+      "operator_end_to_end": {
+        "median_ms": 149.92154999981722,
+        "p20_ms": 149.32561999958125,
+        "p80_ms": 153.36636000029102,
+        "clock": "synchronized_wall"
+      }
+    },
+    "quality": {
+      "mean_absolute_error": 0.00027699637576006353,
+      "max_absolute_error": 0.125,
+      "relative_l1_error": 0.03853476792573929,
+      "relative_l2_error": 0.03641808032989502,
+      "sqnr_db": 28.77366065979004,
+      "cosine_similarity": 0.9993367791175842,
+      "actual_nonfinite_count": 0,
+      "reference_nonfinite_count": 0,
+      "nonfinite_mismatch_count": 0,
+      "saturation": {}
+    },
+    "environment": {
+      "captured_at_utc": "2026-08-08T21:30:49.831603+00:00",
+      "python_version": "3.14.7",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "torch_version": "2.12.1+cu130",
+      "triton_version": "3.7.1.post27",
+      "accelerator_backend": "cuda",
+      "accelerator_runtime_version": "13.0",
+      "accelerator_driver_version": "596.49",
+      "gpu_name": "NVIDIA GeForce RTX 4070 Ti SUPER",
+      "gpu_architecture": "SM89",
+      "gpu_index": 0,
+      "git_revision": "9736eca202a3567c1ba5dd8070a614361ac06ad5",
+      "git_dirty": true
+    },
+    "extra": {
+      "effective_tflops": 235.23452968100008
+    }
+  }
+]
