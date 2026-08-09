@@ -25,6 +25,8 @@ _SM121 = AcceleratorTarget(backend="cuda", architecture="sm121")
                 fuse_query_quantization=False,
                 use_unscaled_score_recurrence=False,
                 use_tensor_descriptors=False,
+                loop_num_stages=3,
+                disable_loop_licm=False,
             ),
         ),
         (
@@ -73,10 +75,11 @@ def test_execution_plan_separates_architecture_facts_from_sm120_tuning(
         (_SM120, 4096, 64),
         (_SM120, 4097, 128),
         (_SM121, 8192, 64),
-        (_SM89, 8192, 64),
+        (_SM89, 8191, 64),
+        (_SM89, 8192, 128),
     ],
 )
-def test_causal_block_schedule_is_tuned_only_for_sm120(
+def test_causal_block_schedule_uses_architecture_specific_tuning(
     target: AcceleratorTarget,
     query_length: int,
     expected_block_m: int,
@@ -91,6 +94,35 @@ def test_causal_block_schedule_is_tuned_only_for_sm120(
     )
 
     assert plan.block_m == expected_block_m
+
+
+def test_long_sm89_d128_causal_schedule_uses_measured_launch_policy() -> None:
+    plan = _select_sage2pp_execution_plan(
+        _SM89,
+        candidate_block_m=128,
+        query_length=8192,
+        key_length=8192,
+        head_dim=128,
+        is_causal=True,
+    )
+
+    assert plan.num_warps == 4
+    assert plan.num_stages == 2
+    assert plan.reverse_causal_blocks
+
+
+def test_long_sm89_d128_noncausal_schedule_enables_licm_and_loop_pipeline() -> None:
+    plan = _select_sage2pp_execution_plan(
+        _SM89,
+        candidate_block_m=128,
+        query_length=8192,
+        key_length=8192,
+        head_dim=128,
+        is_causal=False,
+    )
+
+    assert plan.loop_num_stages == 3
+    assert not plan.disable_loop_licm
 
 
 @pytest.mark.parametrize(

@@ -214,6 +214,13 @@ def test_causal_cross_attention_is_rejected() -> None:
         _validate_args(arguments, (PYTORCH_SDPA,))
 
 
+def test_negative_value_bias_is_rejected() -> None:
+    arguments = _parse_args(["--value-bias-amplitude", "-1"])
+
+    with pytest.raises(SystemExit, match="bias amplitude"):
+        _validate_args(arguments, (PYTORCH_SDPA,))
+
+
 def test_compiler_inspection_requires_one_shape() -> None:
     arguments = _parse_args(["--sequence", "128", "256", "--compiler-report"])
 

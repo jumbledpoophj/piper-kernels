@@ -25,11 +25,20 @@ All notable changes to Piper Kernels are documented here. Versions follow the po
 
 ### Changed
 
+- Tuned the refactored pure-Triton SageAttention2++ path on SM89 with native packed
+  FP32-to-E4M3 conversion, 128-row two-stage reverse-order long-causal launches, and
+  loop-invariant hoisting with a three-stage loop pipeline for long non-causal D128,
+  bringing paired B1/H8/D128 8K, 32K, and 128K latency within 5% of canonical CUDA.
 - Consolidated the Piper, SageAttention2++, canonical CUDA, and SDPA comparisons into
   the hardware-aware `benchmarks/benchmark_attention.py` development CLI.
 - Optimized SageAttention2++ recurrence and causal scheduling across supported GPUs,
   with measured SM120 specializations for fused K/V quantization, fused query
   quantization, and long-sequence unscaled-score recurrence.
+- Added offline-tuned SM89 Piper Attention dispatch for D64/D128 causal and non-causal
+  shapes, including the single-head 131072-token regime, and enabled centered V by
+  default on SM89 based on complete-operator and biased-input measurements.
+- Extended Piper tuning and benchmark reports with launch schedules, native/affine
+  mixed-sign selection, biased-V input metadata, and Triton-Windows version capture.
 
 ## [0.1.0] - 2026-08-03
 

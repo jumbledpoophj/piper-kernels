@@ -110,7 +110,9 @@ def test_native_mixed_int8_hook_uses_query_device_before_preprocessing(
         (1024, 1023, 128, False, (12, 0), False),
         (1024, 1024, 64, False, (12, 0), False),
         (1024, 1024, 128, True, (12, 0), False),
-        (1024, 1024, 128, False, (8, 9), False),
+        (64, 64, 64, False, (8, 9), True),
+        (1024, 1024, 128, True, (8, 9), True),
+        (1024, 1024, 128, False, (8, 0), False),
     ],
 )
 def test_default_centering_policy_is_shape_and_architecture_specific(

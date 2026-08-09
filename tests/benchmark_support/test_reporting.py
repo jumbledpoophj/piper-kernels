@@ -130,6 +130,22 @@ def test_environment_capture_does_not_require_cuda(monkeypatch, tmp_path: Path) 
     assert environment.git_revision is None
 
 
+def test_environment_capture_reports_triton_windows_distribution(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    versions = {"triton": None, "triton-windows": "3.7.1.post27"}
+    monkeypatch.setattr(
+        "lib.environment._package_version",
+        lambda name: versions[name],
+    )
+    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+
+    environment = capture_environment(tmp_path)
+
+    assert environment.triton_version == "3.7.1.post27"
+
+
 def test_environment_capture_identifies_rocm(monkeypatch, tmp_path: Path) -> None:
     class DeviceProperties:
         gcnArchName = "gfx1201:sramecc+:xnack-"  # noqa: N815

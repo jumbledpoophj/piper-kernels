@@ -26,7 +26,10 @@ Changelog = "https://github.com/Boffee/piper-kernels/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 convrot = ["torchao>=0.17"]
-triton = ["triton>=3.7; sys_platform == 'linux'"]
+triton = [
+    "triton>=3.7; sys_platform == 'linux'",
+    "triton-windows>=3.7; sys_platform == 'win32'",
+]
 
 [build-system]
 requires = ["uv_build>=0.9.8,<0.10.0"]
@@ -35,6 +38,7 @@ build-backend = "uv_build"
 [dependency-groups]
 benchmark = [
     "ninja>=1.13",
+    "numpy>=2.0",
     "packaging>=26.0",
     "sageattention==2.2.0; sys_platform == 'linux'",
     "setuptools>=81.0",

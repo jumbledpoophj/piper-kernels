@@ -2,7 +2,7 @@
 
 SageAttention2++ originates from the SageAttention project. This independently
 maintained backend targets consumer Ada and Blackwell GPUs without CUDA source
-or inline PTX. See the repository NOTICE for upstream attribution.
+extensions. See the repository NOTICE for upstream attribution.
 """
 
 # Triton's JIT launcher accepts compile-time options not represented in its
@@ -35,6 +35,26 @@ _LOG2_E = tl.constexpr(1.4426950408889634)
 # Measured SM120 crossover policy, not an algorithmic requirement.
 _CAUSAL_UNSCALED_SCORE_MIN_KEY_LENGTH = 32 * 1024
 _NONCAUSAL_UNSCALED_SCORE_MIN_KEY_LENGTH = 128 * 1024
+
+
+@triton.jit
+def _ptx_float32_to_e4m3x4(values):
+    """Use the native packed SM89+ conversion used by canonical SageAttention."""
+    return tl.inline_asm_elementwise(
+        asm="""
+        {
+            .reg .b16 lo, hi;
+            cvt.rn.satfinite.e4m3x2.f32 lo, $2, $1;
+            cvt.rn.satfinite.e4m3x2.f32 hi, $4, $3;
+            mov.b32 $0, {lo, hi};
+        }
+        """,
+        constraints="=r,f,f,f,f",
+        args=[values],
+        dtype=tl.float8e4nv,
+        is_pure=True,
+        pack=4,
+    )
 
 
 @triton.jit
@@ -163,7 +183,7 @@ def _quantize_value_kernel(
         other=0.0,
     ).to(tl.float32)
     scale = tl.load(value_scale_ptr + (batch * heads + head) * head_dim + offsets_d)
-    quantized = (value / scale[None, :]).to(tl.float8e4nv)
+    quantized = _ptx_float32_to_e4m3x4(value / scale[None, :])
     tl.store(
         output_ptr
         + batch * stride_ob
@@ -254,7 +274,7 @@ def _quantize_kv_per_block_kernel(
             other=0.0,
         ).to(tl.float32)
         value_scale = tl.load(value_scale_ptr + batch_head * head_dim + offsets_d)
-        value_quantized = (value_values / value_scale[None, :]).to(tl.float8e4nv)
+        value_quantized = _ptx_float32_to_e4m3x4(value_values / value_scale[None, :])
         tl.store(
             value_output_ptr
             + batch * stride_vob
@@ -277,13 +297,10 @@ def _load_value_tile(
     heads: tl.constexpr,
     head_dim: tl.constexpr,
 ):
-    pointers = (
+    return tl.load(
         value_ptr
         + ((batch * heads + head) * head_dim + offsets_d[None, :]) * key_length
-        + current_n[:, None]
-    )
-    return tl.load(
-        pointers,
+        + current_n[:, None],
         mask=current_n[:, None] < key_length,
         other=0.0,
     )
@@ -459,7 +476,7 @@ def _causal_attention_tile(
     accumulator *= old_weight[:, None]
     denominator = denominator * old_weight + tl.sum(probabilities, axis=1)
 
-    probability_fp8 = probabilities.to(tl.float8e4nv)
+    probability_fp8 = _ptx_float32_to_e4m3x4(probabilities)
     value = _load_attention_value_tile(
         value_ptr,
         batch,
@@ -503,6 +520,9 @@ def _sage_attention_2pp_kernel(  # noqa: PLR0912, PLR0915 - keep noncausal loop 
     grouped_qk: tl.constexpr,
     fuse_query_quantization: tl.constexpr,
     use_unscaled_score_recurrence: tl.constexpr,
+    reverse_causal_blocks: tl.constexpr,
+    loop_num_stages: tl.constexpr,
+    disable_loop_licm: tl.constexpr,
     heads: tl.constexpr,
     head_dim: tl.constexpr,
     block_m: tl.constexpr,
@@ -519,6 +539,8 @@ def _sage_attention_2pp_kernel(  # noqa: PLR0912, PLR0915 - keep noncausal loop 
     )
     tl.static_assert(block_n == _BLOCK_N, "SageAttention2++ requires 64-key tiles")
     query_block = tl.program_id(0)
+    if is_causal and reverse_causal_blocks:
+        query_block = tl.num_programs(0) - 1 - query_block
     head = tl.program_id(1)
     batch = tl.program_id(2)
     offsets_m = query_block * block_m + tl.arange(0, block_m)
@@ -572,7 +594,13 @@ def _sage_attention_2pp_kernel(  # noqa: PLR0912, PLR0915 - keep noncausal loop 
         full_key_end = key_length // block_n * block_n
         causal_prefix_end = query_block * block_m // block_n * block_n
         prefix_end = tl.minimum(causal_prefix_end, full_key_end)
-        for start_n in tl.range(0, prefix_end, block_n, disable_licm=True):
+        for start_n in tl.range(
+            0,
+            prefix_end,
+            block_n,
+            num_stages=loop_num_stages,
+            disable_licm=disable_loop_licm,
+        ):
             accumulator, denominator, running_max = _causal_attention_tile(
                 query,
                 query_scale,
@@ -600,7 +628,13 @@ def _sage_attention_2pp_kernel(  # noqa: PLR0912, PLR0915 - keep noncausal loop 
                 block_n=block_n,
                 use_tensor_descriptors=use_tensor_descriptors,
             )
-        for start_n in tl.range(prefix_end, end_n, block_n, disable_licm=True):
+        for start_n in tl.range(
+            prefix_end,
+            end_n,
+            block_n,
+            num_stages=loop_num_stages,
+            disable_licm=disable_loop_licm,
+        ):
             accumulator, denominator, running_max = _causal_attention_tile(
                 query,
                 query_scale,
@@ -630,7 +664,13 @@ def _sage_attention_2pp_kernel(  # noqa: PLR0912, PLR0915 - keep noncausal loop 
             )
     else:
         # Keep the noncausal loop monolithic to preserve its register allocation.
-        for start_n in tl.range(0, end_n, block_n, disable_licm=True):
+        for start_n in tl.range(
+            0,
+            end_n,
+            block_n,
+            num_stages=loop_num_stages,
+            disable_licm=disable_loop_licm,
+        ):
             current_n = start_n + offsets_n
             key = _load_attention_key_tile(
                 key_ptr,
@@ -698,7 +738,7 @@ def _sage_attention_2pp_kernel(  # noqa: PLR0912, PLR0915 - keep noncausal loop 
             accumulator *= old_weight[:, None]
             denominator = denominator * old_weight + tl.sum(probabilities, axis=1)
 
-            probability_fp8 = probabilities.to(tl.float8e4nv)
+            probability_fp8 = _ptx_float32_to_e4m3x4(probabilities)
             value = _load_attention_value_tile(
                 value_ptr,
                 batch,
@@ -765,6 +805,11 @@ class _Sage2ppExecutionPlan:
     fuse_query_quantization: bool
     use_unscaled_score_recurrence: bool
     use_tensor_descriptors: bool
+    num_warps: int = 4
+    num_stages: int = 3
+    reverse_causal_blocks: bool = False
+    loop_num_stages: int | None = None
+    disable_loop_licm: bool = True
 
     def __post_init__(self) -> None:
         if self.fuse_kv_quantization and not self.grouped_qk:
@@ -787,12 +832,21 @@ def _select_sage2pp_execution_plan(
 ) -> _Sage2ppExecutionPlan:
     """Select measured policy separately from target hardware capabilities."""
     grouped_qk = target.is_cuda_capability(12)
+    tuned_sm89 = target.is_cuda_capability(8, 9)
     tuned_sm120 = target.is_cuda_capability(12, 0)
 
     block_m = candidate_block_m
-    # On SM120, K/V reuse makes 128-row causal tiles worthwhile beyond 4K.
-    # Other targets retain the lower-footprint 64-row causal schedule.
-    if is_causal and (not tuned_sm120 or query_length <= 4096):
+    # Long SM89 D128 and SM120 causal loops amortize recurrence overhead and
+    # reuse K/V more effectively with 128 query rows per workgroup.
+    tuned_sm89_long_causal = (
+        tuned_sm89 and is_causal and head_dim == 128 and query_length >= 8192
+    )
+    tuned_sm89_long_noncausal = (
+        tuned_sm89 and not is_causal and head_dim == 128 and query_length >= 8192
+    )
+    if is_causal and (
+        (not tuned_sm120 and not tuned_sm89_long_causal) or query_length <= 4096
+    ):
         block_m = min(block_m, 64)
 
     minimum_key_length = (
@@ -814,6 +868,10 @@ def _select_sage2pp_execution_plan(
         fuse_query_quantization=fuse_query_quantization,
         use_unscaled_score_recurrence=use_unscaled_score_recurrence,
         use_tensor_descriptors=use_tensor_descriptors,
+        num_stages=2 if tuned_sm89_long_causal else 3,
+        reverse_causal_blocks=tuned_sm89_long_causal,
+        loop_num_stages=3 if tuned_sm89_long_noncausal else None,
+        disable_loop_licm=not tuned_sm89_long_noncausal,
     )
 
 
@@ -1156,13 +1214,16 @@ def _launch_sage_attention_2pp(prepared: _PreparedSage2ppAttention) -> torch.Ten
         # Reducing before applying the positive row scale cuts spill traffic in
         # very long loops, but the alternate schedule loses at shorter lengths.
         use_unscaled_score_recurrence=plan.use_unscaled_score_recurrence,
+        reverse_causal_blocks=plan.reverse_causal_blocks,
+        loop_num_stages=plan.loop_num_stages,
+        disable_loop_licm=plan.disable_loop_licm,
         heads=heads,
         head_dim=head_dim,
         block_m=plan.block_m,
         block_n=_BLOCK_N,
         use_tensor_descriptors=plan.use_tensor_descriptors,
-        num_stages=3,
-        num_warps=4,
+        num_stages=plan.num_stages,
+        num_warps=plan.num_warps,
     )
     return prepared.output
 
