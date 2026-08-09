@@ -1,0 +1,374 @@
+[
+  {
+    "schema_version": 1,
+    "record_type": "triton_compiler",
+    "provider": "pure-triton-sage2pp",
+    "configuration": {
+      "dtype": "bfloat16",
+      "is_causal": false,
+      "scale": null,
+      "qkv_layout": "BHSD",
+      "value_bias_amplitude": 0.0,
+      "implementation": "pure_triton",
+      "algorithm": "sage_attention_2pp",
+      "qk_quantization": "per_thread",
+      "pv_accumulation": "fp32+fp16"
+    },
+    "environment": {
+      "captured_at_utc": "2026-08-09T02:25:49.205124+00:00",
+      "python_version": "3.14.7",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "torch_version": "2.12.1+cu130",
+      "triton_version": "3.7.1.post27",
+      "accelerator_backend": "cuda",
+      "accelerator_runtime_version": "13.0",
+      "accelerator_driver_version": "596.49",
+      "gpu_name": "NVIDIA GeForce RTX 4070 Ti SUPER",
+      "gpu_architecture": "SM89",
+      "gpu_index": 0,
+      "git_revision": "962ca4c32d1f60315d1d62afb06cfad13e4880d4",
+      "git_dirty": true
+    },
+    "specializations": [
+      {
+        "kernel": "kv-statistics-partial",
+        "specialization_index": 0,
+        "specialization_fingerprint": "8bda9ca7794cc6fe",
+        "specialization_key": "[('*bf16', 'D'), ('*bf16', 'D'), ('*fp32', 'D'), ('*fp32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('constexpr', 8), ('constexpr', 128), ('constexpr', 256)]{'num_warps': 4, 'debug': False, 'instrumentation_mode': ''}",
+        "device_index": 0,
+        "compiler_backend": "cuda",
+        "target_architecture": "sm89",
+        "registers_per_thread": 168,
+        "spills": 0,
+        "shared_memory_bytes_per_workgroup": 2048,
+        "warps_per_workgroup": 4,
+        "stages": 3,
+        "ctas_per_cluster": 1,
+        "residency_ceiling": {
+          "resident_workgroups_per_compute_unit": 3,
+          "resident_warps_per_compute_unit": 12,
+          "limiting_resources": [
+            "registers"
+          ],
+          "workgroup_limits": {
+            "registers": 3,
+            "shared_memory": 50,
+            "threads": 12
+          }
+        },
+        "ptx": {
+          "instruction_count": 2040,
+          "families": {
+            "abs": 256,
+            "add": 347,
+            "and": 10,
+            "bar": 9,
+            "bfe": 1,
+            "cvt": 264,
+            "ld": 100,
+            "ldmatrix": 2,
+            "mad": 69,
+            "max": 264,
+            "mov": 518,
+            "mul": 70,
+            "neg": 1,
+            "or": 35,
+            "ret": 1,
+            "setp": 18,
+            "shfl": 32,
+            "shl": 8,
+            "shr": 3,
+            "st": 30,
+            "xor": 2
+          },
+          "mma_opcodes": {}
+        },
+        "sass": null
+      },
+      {
+        "kernel": "kv-statistics-finish",
+        "specialization_index": 0,
+        "specialization_fingerprint": "41cab93e17dca1dc",
+        "specialization_key": "[('*fp32', 'D'), ('*fp32', 'D'), ('*fp32', 'D'), ('*fp32', 'D'), ('i32', 'D'), ('i32', 'D'), ('constexpr', 128), ('constexpr', 128), ('constexpr', 32)]{'num_warps': 4, 'debug': False, 'instrumentation_mode': ''}",
+        "device_index": 0,
+        "compiler_backend": "cuda",
+        "target_architecture": "sm89",
+        "registers_per_thread": 54,
+        "spills": 0,
+        "shared_memory_bytes_per_workgroup": 512,
+        "warps_per_workgroup": 4,
+        "stages": 3,
+        "ctas_per_cluster": 1,
+        "residency_ceiling": {
+          "resident_workgroups_per_compute_unit": 9,
+          "resident_warps_per_compute_unit": 36,
+          "limiting_resources": [
+            "registers"
+          ],
+          "workgroup_limits": {
+            "registers": 9,
+            "shared_memory": 200,
+            "threads": 12
+          }
+        },
+        "ptx": {
+          "instruction_count": 323,
+          "families": {
+            "add": 74,
+            "and": 16,
+            "bar": 9,
+            "bfe": 1,
+            "cvt": 1,
+            "div": 8,
+            "ld": 32,
+            "ldmatrix": 2,
+            "max": 38,
+            "mov": 71,
+            "mul": 5,
+            "or": 9,
+            "ret": 1,
+            "setp": 13,
+            "shfl": 20,
+            "shl": 8,
+            "shr": 1,
+            "st": 14
+          },
+          "mma_opcodes": {}
+        },
+        "sass": null
+      },
+      {
+        "kernel": "quantize-key-per-thread",
+        "specialization_index": 0,
+        "specialization_fingerprint": "1f99c4c9dd2787fa",
+        "specialization_key": "[('*bf16', 'D'), ('*fp32', 'D'), ('*i8', 'D'), ('*fp32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('constexpr', 8), ('constexpr', 128)]{'num_warps': 4, 'debug': False, 'instrumentation_mode': ''}",
+        "device_index": 0,
+        "compiler_backend": "cuda",
+        "target_architecture": "sm89",
+        "registers_per_thread": 40,
+        "spills": 0,
+        "shared_memory_bytes_per_workgroup": 512,
+        "warps_per_workgroup": 4,
+        "stages": 3,
+        "ctas_per_cluster": 1,
+        "residency_ceiling": {
+          "resident_workgroups_per_compute_unit": 12,
+          "resident_warps_per_compute_unit": 48,
+          "limiting_resources": [
+            "registers",
+            "threads"
+          ],
+          "workgroup_limits": {
+            "registers": 12,
+            "shared_memory": 200,
+            "threads": 12
+          }
+        },
+        "ptx": {
+          "instruction_count": 384,
+          "families": {
+            "abs": 16,
+            "add": 31,
+            "and": 14,
+            "bar": 4,
+            "bfe": 1,
+            "cvt": 52,
+            "div": 17,
+            "ld": 22,
+            "mad": 9,
+            "max": 38,
+            "min": 16,
+            "mov": 40,
+            "mul": 8,
+            "or": 6,
+            "prmt": 12,
+            "ret": 1,
+            "selp": 32,
+            "setp": 22,
+            "shfl": 7,
+            "shl": 9,
+            "shr": 2,
+            "st": 5,
+            "sub": 16,
+            "xor": 4
+          },
+          "mma_opcodes": {}
+        },
+        "sass": null
+      },
+      {
+        "kernel": "quantize-value-per-channel",
+        "specialization_index": 0,
+        "specialization_fingerprint": "35bdbf97bf871e1e",
+        "specialization_key": "[('*bf16', 'D'), ('*fp32', 'D'), ('*fp8e4nv', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('constexpr', 8), ('constexpr', 128), ('constexpr', constexpr[64])]{'num_warps': 4, 'debug': False, 'instrumentation_mode': ''}",
+        "device_index": 0,
+        "compiler_backend": "cuda",
+        "target_architecture": "sm89",
+        "registers_per_thread": 58,
+        "spills": 0,
+        "shared_memory_bytes_per_workgroup": 8192,
+        "warps_per_workgroup": 4,
+        "stages": 3,
+        "ctas_per_cluster": 1,
+        "residency_ceiling": {
+          "resident_workgroups_per_compute_unit": 8,
+          "resident_warps_per_compute_unit": 32,
+          "limiting_resources": [
+            "registers"
+          ],
+          "workgroup_limits": {
+            "registers": 8,
+            "shared_memory": 12,
+            "threads": 12
+          }
+        },
+        "ptx": {
+          "instruction_count": 413,
+          "families": {
+            "add": 32,
+            "and": 9,
+            "bar": 5,
+            "bfe": 3,
+            "cvt": 103,
+            "div": 64,
+            "ld": 23,
+            "ldmatrix": 8,
+            "mad": 13,
+            "mov": 87,
+            "mul": 14,
+            "or": 13,
+            "ret": 1,
+            "setp": 5,
+            "shl": 12,
+            "shr": 2,
+            "st": 13,
+            "xor": 6
+          },
+          "mma_opcodes": {}
+        },
+        "sass": null
+      },
+      {
+        "kernel": "quantize-query-per-thread",
+        "specialization_index": 0,
+        "specialization_fingerprint": "c44fee202bf13a1a",
+        "specialization_key": "[('*bf16', 'D'), ('*i8', 'D'), ('*fp32', 'D'), ('i32', 'D'), ('fp32', None), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('constexpr', 128)]{'num_warps': 4, 'debug': False, 'instrumentation_mode': ''}",
+        "device_index": 0,
+        "compiler_backend": "cuda",
+        "target_architecture": "sm89",
+        "registers_per_thread": 20,
+        "spills": 0,
+        "shared_memory_bytes_per_workgroup": 16,
+        "warps_per_workgroup": 4,
+        "stages": 3,
+        "ctas_per_cluster": 1,
+        "residency_ceiling": {
+          "resident_workgroups_per_compute_unit": 12,
+          "resident_warps_per_compute_unit": 48,
+          "limiting_resources": [
+            "threads"
+          ],
+          "workgroup_limits": {
+            "registers": 25,
+            "shared_memory": 6400,
+            "threads": 12
+          }
+        },
+        "ptx": {
+          "instruction_count": 155,
+          "families": {
+            "abs": 4,
+            "add": 11,
+            "and": 12,
+            "bar": 2,
+            "cvt": 16,
+            "div": 5,
+            "ld": 16,
+            "mad": 7,
+            "max": 14,
+            "min": 4,
+            "mov": 15,
+            "mul": 10,
+            "or": 4,
+            "prmt": 3,
+            "ret": 1,
+            "selp": 4,
+            "setp": 10,
+            "shfl": 7,
+            "shl": 4,
+            "shr": 2,
+            "st": 4
+          },
+          "mma_opcodes": {}
+        },
+        "sass": null
+      },
+      {
+        "kernel": "attention",
+        "specialization_index": 0,
+        "specialization_fingerprint": "949f8c8d85d519e4",
+        "specialization_key": "[('*i8', 'D'), ('*i8', 'D'), ('*fp8e4nv', 'D'), ('*fp32', 'D'), ('*fp32', 'D'), ('*fp32', 'D'), ('*bf16', 'D'), ('i32', 'D'), ('i32', 'D'), ('fp32', None), ('i32', 'D'), ('i32', 'D'), ('i32', 'D'), ('constexpr', False), ('constexpr', False), ('constexpr', False), ('constexpr', False), ('constexpr', False), ('constexpr', False), ('constexpr', None), ('constexpr', 1), ('constexpr', False), ('constexpr', True), ('constexpr', False), ('constexpr', 8), ('constexpr', 128), ('constexpr', 128), ('constexpr', constexpr[64]), ('constexpr', False)]{'num_stages': 3, 'num_warps': 4, 'maxnreg': None, 'enable_fp_fusion': True, 'debug': False, 'instrumentation_mode': ''}",
+        "device_index": 0,
+        "compiler_backend": "cuda",
+        "target_architecture": "sm89",
+        "registers_per_thread": 255,
+        "spills": 0,
+        "shared_memory_bytes_per_workgroup": 49664,
+        "warps_per_workgroup": 4,
+        "stages": 3,
+        "ctas_per_cluster": 1,
+        "residency_ceiling": {
+          "resident_workgroups_per_compute_unit": 2,
+          "resident_warps_per_compute_unit": 8,
+          "limiting_resources": [
+            "registers",
+            "shared_memory"
+          ],
+          "workgroup_limits": {
+            "registers": 2,
+            "shared_memory": 2,
+            "threads": 12
+          }
+        },
+        "ptx": {
+          "instruction_count": 2500,
+          "families": {
+            "add": 243,
+            "and": 21,
+            "bar": 15,
+            "bfe": 3,
+            "bra": 2,
+            "cp": 38,
+            "cvt": 310,
+            "div": 128,
+            "ex2": 68,
+            "fma": 132,
+            "ld": 40,
+            "ldmatrix": 56,
+            "mad": 23,
+            "max": 72,
+            "mma": 128,
+            "mov": 522,
+            "mul": 275,
+            "or": 41,
+            "prmt": 16,
+            "ret": 1,
+            "selp": 118,
+            "setp": 49,
+            "shfl": 32,
+            "shl": 41,
+            "shr": 2,
+            "st": 42,
+            "sub": 68,
+            "xor": 14
+          },
+          "mma_opcodes": {
+            "mma.sync.aligned.m16n8k32.row.col.f16.e4m3.e4m3.f16": 64,
+            "mma.sync.aligned.m16n8k32.row.col.satfinite.s32.s8.s8.s32": 64
+          }
+        },
+        "sass": null
+      }
+    ]
+  }
+]
