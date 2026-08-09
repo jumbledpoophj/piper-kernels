@@ -13,7 +13,8 @@ record.
   per-feature V bias amplitude 8.
 - `compiler-*.json`: Triton resource and PTX instruction reports for native and affine
   N=8192 specializations. SASS is null because `nvdisasm` was unavailable.
-- `comparison-sage2pp/`: final Piper versus canonical SageAttention2++ comparisons at
+- `comparison-sage2pp/`: earlier canonical CUDA point comparisons and the final
+  complete-operator statistical comparison against local Triton SageAttention2++ at
   B1/H8/D128 and 8K, 32K, and 128K in causal and non-causal modes.
 
 All records use the benchmark schema documented in `benchmarks/README.md`. Re-run a

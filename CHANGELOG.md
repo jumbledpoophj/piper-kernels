@@ -53,9 +53,14 @@ All notable changes to Piper Kernels are documented here. Versions follow the po
 - Added offline-tuned SM89 Piper Attention dispatch for D64/D128 causal and non-causal
   shapes, including the single-head 131072-token regime, and enabled centered V by
   default on SM89 based on complete-operator and biased-input measurements.
-- Extended Piper Attention tuning and benchmark reports with launch schedules,
-  native/affine mixed-sign selection, biased-V input metadata, and Triton-Windows
-  version capture.
+- Added a long-context SM89 D128 Piper specialization with 64-key shared centered-V
+  scales, split FP16 PV accumulation, branch-minimal causal loops, fused Q/K/V
+  preparation, packed UINT8 probability conversion, and an independently measured
+  128K launch/loop pipeline. Paired counterbalanced B1/H8 benchmarks establish the
+  complete 8K, 32K, and 128K causal and non-causal operators within 3% of local
+  Triton SageAttention2++ at a familywise 95% confidence level.
+- Extended Piper tuning and benchmark reports with launch schedules, native/affine
+  mixed-sign selection, biased-V input metadata, and Triton-Windows version capture.
 
 ### Fixed
 

@@ -77,12 +77,20 @@ output = piper_attention(query, key, value, is_causal=False)
 ```
 
 It follows FlashAttention's fused online-softmax structure and SageAttention's K
-smoothing plus INT8 QK quantization. Its distinct PV path quantizes each V key row
-with one signed-INT8 scale, folds those scales into nonnegative probabilities, and
+smoothing plus INT8 QK quantization. Its distinct PV path normally quantizes each V key
+row with one signed-INT8 scale, folds those scales into nonnegative probabilities, and
 uses `UINT8 x INT8 -> INT32` tensor-core products. The probability multiplier remains
 FP32 so every finite FP16 input scale is representable without a conversion in the hot
-loop. FP32 also remains the softmax and denominator coordinate; the selected long SM12x
-D128 schedule buffers a bounded PV numerator in FP16.
+loop. FP32 also remains the softmax and denominator coordinate.
+
+Long, aligned SM89 D128 self-attention has a separately tuned specialization. It shares
+one centered signed-INT8 V scale across each 64-key tile, splits the D128 PV product into
+two D64 tensor-core products with a bounded FP16 numerator, separates causal prefix and
+diagonal loops, and fuses K/V quantization. Q quantization stays in the attention CTA at
+8K and moves into the Q/K/V preparation CTA at 32K and 128K to reduce recurrence register
+pressure. Its packed PTX conversion produces four UINT8 probability codes per operation;
+non-causal 32K and 128K truncate while the other selected points round to nearest. Other
+tensor shapes retain the generic per-key formulation.
 
 For centered V, Piper Attention uses the exact identity
 

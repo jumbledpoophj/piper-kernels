@@ -73,9 +73,11 @@ uv run python benchmarks/tune_piper_attention.py \
   --json artifacts/piper_attention_tuning.json
 ```
 
-The Piper tuner searches query tile sizes, warp counts, and pipeline stages. Use
-`--mixed-sign both` to include native UINT8 MMA and the affine signed-INT8 proxy, or
-restrict any launch axis with `--block-m`, `--num-warps`, and `--num-stages`.
+The Piper tuner searches query tile sizes, warp counts, launch and loop pipeline stages,
+PV accumulator layouts, query-quantization placement, and standard versus packed UINT8
+probability conversion. Use `--mixed-sign both` to include native UINT8 MMA and the affine
+signed-INT8 proxy, or restrict launch axes with `--block-m`, `--num-warps`, and
+`--num-stages`.
 
 Use `--phase operator_end_to_end` to include preprocessing in the ranking. The default
 `prepared_execution` phase compares only the prepared fused recurrence. On targets where a
@@ -539,15 +541,39 @@ The representative B1/H8 dispatch points are:
 |:---|:---|:---|
 | non-causal N=512 | M64/W4/S3 | M32/W4/S3 |
 | non-causal N=1024 | M64/W4/S3 | M64/W4/S3 |
-| non-causal N>=2048 | M128/W4/S3 | M128/W4/S2 |
+| non-causal N=2048..32768 | M128/W4/S3 | M128/W4/S2 |
+| non-causal N>=131072 | M128/W4/S3 | M128/W4/S2 |
 | causal N=512 | M64/W4/S4 | M32/W4/S3 |
-| causal N>=1024 | M64/W4/S4 | M128/W8/S4 |
+| causal N=1024..4096 | M64/W4/S4 | M128/W8/S4 |
+| causal N=8192..16384 | M64/W4/S4 | M128/W4/S3 |
+| causal N>=32768 | M64/W4/S4 | M128/W4/S2 |
 
 The actual policy uses CTA coverage relative to the device SM count, so thresholds adapt
 to batch and head parallelism rather than matching only this table. Near-tied D64 stage
 counts varied within roughly one percent across repeated searches; S3 was retained for
 non-causal D64 because it was the stable matrix-wide choice. The complete candidate
 records, including H1/N131072 searches, are in `benchmarks/results/sm89/piper/`.
+
+The final long D128 specialization was compared with the repository's local Triton
+SageAttention2++ on the same RTX 4070 Ti SUPER under Torch 2.13.0+cu130, CUDA 13.0,
+and Triton-Windows 3.7.1.post27. The fair estimand is complete-operator wall time,
+including each provider's preprocessing and allocations. Alternating ABBA/BAAB provider
+order supplied 30 paired blocks per shape. Pattern-stratified and consecutive-three-block
+cluster bootstraps used 250,000 replicates, and the one-sided upper bound applies a
+Bonferroni correction across all six shapes. Negative gaps mean Piper is faster.
+
+| execution | N | paired Piper/SA2++ complete gap | familywise one-sided upper gap | within 3% |
+|:---|---:|---:|---:|:---:|
+| non-causal | 8192 | -5.091% | -4.908% | yes |
+| non-causal | 32768 | +0.024% | +0.310% | yes |
+| non-causal | 131072 | -0.891% | -0.766% | yes |
+| causal | 8192 | -9.402% | -9.284% | yes |
+| causal | 32768 | -1.166% | -0.873% | yes |
+| causal | 131072 | -1.505% | -1.149% | yes |
+
+The packed conversion is bit-for-bit equivalent to ordinary Triton conversion for both
+the rounding and truncation policies. It is a broad SM72+ PTX operation, while its current
+production selection and the surrounding shared-scale recurrence are SM89 D128 tuning.
 
 At N=8192, native centered Piper measured:
 

@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "benchmark": "attention_paired_noninferiority_summary",
+  "captured_at_utc": "2026-08-09T21:44:49.990539+00:00",
+  "environment": {
+    "python_version": "3.14.7",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "torch_version": "2.13.0+cu130",
+    "triton_version": "3.7.1.post27",
+    "accelerator_runtime_version": "13.0",
+    "accelerator_driver_version": "596.49",
+    "gpu_name": "NVIDIA GeForce RTX 4070 Ti SUPER",
+    "gpu_architecture": "SM89"
+  },
+  "comparison": {
+    "candidate": "piper_attention",
+    "reference": "sage_attention_2pp",
+    "phase": "operator_end_to_end",
+    "shape": "BF16 B1/H8/D128 self-attention"
+  },
+  "design": {
+    "blocks_per_shape": 30,
+    "provider_orders": [
+      "ABBA",
+      "BAAB"
+    ],
+    "target_segment_ms": 150.0,
+    "warmup_seconds": 3.0,
+    "estimand": "geometric mean of paired block latency ratios",
+    "noninferiority_margin_ratio": 1.03,
+    "familywise_alpha_one_sided": 0.05,
+    "multiplicity_correction": "Bonferroni across six shapes",
+    "bootstrap": "pattern-stratified and consecutive three-block cluster percentile",
+    "bootstrap_replicates": 250000,
+    "permutation_replicates": 250000
+  },
+  "results": [
+    {
+      "sequence": 8192,
+      "is_causal": false,
+      "candidate_over_reference_ratio": 0.9490946171347592,
+      "gap_percent": -5.090538286524082,
+      "conservative_two_sided_95_ci": [
+        0.947236059924696,
+        0.9506577198833993
+      ],
+      "familywise_bonferroni_one_sided_upper": 0.9509203220543693,
+      "within_margin_noninferior_familywise_95": true,
+      "equality_difference_significant_95": true
+    },
+    {
+      "sequence": 32768,
+      "is_causal": false,
+      "candidate_over_reference_ratio": 1.0002442995710263,
+      "gap_percent": 0.02442995710263407,
+      "conservative_two_sided_95_ci": [
+        0.9979613891723417,
+        1.002595567759413
+      ],
+      "familywise_bonferroni_one_sided_upper": 1.0031037556879698,
+      "within_margin_noninferior_familywise_95": true,
+      "equality_difference_significant_95": false
+    },
+    {
+      "sequence": 131072,
+      "is_causal": false,
+      "candidate_over_reference_ratio": 0.9910920050919545,
+      "gap_percent": -0.8907994908045502,
+      "conservative_two_sided_95_ci": [
+        0.9898514017858812,
+        0.9921543990819488
+      ],
+      "familywise_bonferroni_one_sided_upper": 0.9923417355135559,
+      "within_margin_noninferior_familywise_95": true,
+      "equality_difference_significant_95": true
+    },
+    {
+      "sequence": 8192,
+      "is_causal": true,
+      "candidate_over_reference_ratio": 0.9059817122760643,
+      "gap_percent": -9.401828772393571,
+      "conservative_two_sided_95_ci": [
+        0.9047261702598549,
+        0.9069885032281438
+      ],
+      "familywise_bonferroni_one_sided_upper": 0.9071557894907488,
+      "within_margin_noninferior_familywise_95": true,
+      "equality_difference_significant_95": true
+    },
+    {
+      "sequence": 32768,
+      "is_causal": true,
+      "candidate_over_reference_ratio": 0.9883377664486511,
+      "gap_percent": -1.1662233551348877,
+      "conservative_two_sided_95_ci": [
+        0.9857990930602342,
+        0.9907836931341019
+      ],
+      "familywise_bonferroni_one_sided_upper": 0.9912693448950705,
+      "within_margin_noninferior_familywise_95": true,
+      "equality_difference_significant_95": true
+    },
+    {
+      "sequence": 131072,
+      "is_causal": true,
+      "candidate_over_reference_ratio": 0.9849531701423547,
+      "gap_percent": -1.5046829857645272,
+      "conservative_two_sided_95_ci": [
+        0.9822750935533568,
+        0.9878412215813225
+      ],
+      "familywise_bonferroni_one_sided_upper": 0.9885145829239349,
+      "within_margin_noninferior_familywise_95": true,
+      "equality_difference_significant_95": true
+    }
+  ]
+}
