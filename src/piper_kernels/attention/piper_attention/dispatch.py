@@ -102,6 +102,8 @@ def _default_center_value(
     """Select the measured centered-V region without assuming it helps every target."""
     if not _supports_triton(target):
         return False
+    if target.is_cuda_capability(8, 9):
+        return True
     return (
         target.is_cuda_capability(12)
         and not is_causal
@@ -131,8 +133,8 @@ def piper_attention(
     quantizes each V row with its own signed-INT8 scale and folds that scale
     into a UINT8 probability operand. ``center_value=True`` subtracts the
     sequence-wide per-feature V mean before quantization and restores it in
-    the epilogue. ``None`` enables centering only in its measured long,
-    non-causal SM12x D128 region.
+    the epilogue. ``None`` enables centering in the measured SM89 region and
+    in the long, non-causal SM12x D128 region.
 
     The optimized backend supports NVIDIA SM8x and consumer Blackwell SM12x,
     where the packaged compiler extension can select mixed-sign MMAv2. Other

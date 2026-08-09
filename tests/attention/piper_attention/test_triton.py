@@ -12,6 +12,7 @@ from piper_kernels.attention.piper_attention.triton import (
     _launch_piper_attention,
     _prepare_piper_attention,
     _run_piper_attention,
+    _select_sm89_schedule,
 )
 
 
@@ -39,18 +40,52 @@ pytestmark = [
 ]
 
 
+@pytest.mark.parametrize(
+    ("query_length", "head_dim", "is_causal", "default_block_m", "expected"),
+    [
+        (256, 64, False, 32, (32, 4, 3)),
+        (512, 64, False, 32, (64, 4, 3)),
+        (2048, 64, False, 128, (128, 4, 3)),
+        (512, 128, False, 32, (32, 4, 3)),
+        (2048, 128, False, 128, (128, 4, 2)),
+        (256, 64, True, 32, (32, 4, 3)),
+        (512, 64, True, 32, (64, 4, 4)),
+        (512, 128, True, 32, (32, 4, 3)),
+        (1024, 128, True, 64, (128, 8, 4)),
+    ],
+)
+def test_sm89_schedule_matches_offline_tuning_policy(
+    query_length: int,
+    head_dim: int,
+    is_causal: bool,
+    default_block_m: int,
+    expected: tuple[int, int, int],
+) -> None:
+    assert _select_sm89_schedule(
+        default_block_m=default_block_m,
+        batch=1,
+        heads=8,
+        query_length=query_length,
+        head_dim=head_dim,
+        is_causal=is_causal,
+        num_sms=66,
+    ) == expected
+
+
 @pytest.mark.parametrize("center_value", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("head_dim", [64, 128])
 @pytest.mark.parametrize("is_causal", [False, True])
+@pytest.mark.parametrize("sequence", [192, 193])
 def test_triton_matches_quantized_reference(
     dtype: torch.dtype,
     head_dim: int,
     is_causal: bool,
     center_value: bool,
+    sequence: int,
 ) -> None:
     torch.manual_seed(54)
-    query = torch.randn(1, 2, 193, head_dim, device="cuda", dtype=dtype)
+    query = torch.randn(1, 2, sequence, head_dim, device="cuda", dtype=dtype)
     key = torch.randn_like(query)
     value = torch.randn_like(query)
 
@@ -105,9 +140,10 @@ def test_affine_fallback_matches_native_uint8(sequence: int) -> None:
     assert torch.equal(native, affine)
 
 
-def test_centered_value_fusion_restores_constant_value() -> None:
+@pytest.mark.parametrize("sequence", [193, 1024])
+def test_centered_value_fusion_restores_constant_value(sequence: int) -> None:
     torch.manual_seed(56)
-    query = torch.randn(1, 2, 1024, 128, device="cuda", dtype=torch.bfloat16)
+    query = torch.randn(1, 2, sequence, 128, device="cuda", dtype=torch.bfloat16)
     key = torch.randn_like(query)
     value_row = torch.randn(1, 2, 1, 128, device="cuda", dtype=torch.bfloat16)
     value = value_row.expand_as(query).contiguous()
@@ -150,7 +186,6 @@ def test_large_value_scale_multiplier_remains_finite() -> None:
     torch.testing.assert_close(actual, expected, atol=2**-9, rtol=0.0)
 
 
-@pytest.mark.skipif(not _sm120_available(), reason="centered long path is tuned for SM12x")
 def test_centering_improves_biased_value_quality() -> None:
     torch.manual_seed(57)
     sequence = 1024
@@ -166,7 +201,8 @@ def test_centering_improves_biased_value_quality() -> None:
 
     uncentered_mse = (uncentered.float() - expected.float()).square().mean()
     centered_mse = (centered.float() - expected.float()).square().mean()
-    assert centered_mse < uncentered_mse * 0.2
+    maximum_ratio = 0.25 if torch.cuda.get_device_capability() == (8, 9) else 0.2
+    assert centered_mse < uncentered_mse * maximum_ratio
 
 
 @pytest.mark.skipif(not _sm120_available(), reason="ordered grouped-QK path targets SM12x")

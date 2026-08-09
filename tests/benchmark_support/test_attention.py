@@ -54,6 +54,7 @@ def test_attention_config_uses_stable_names() -> None:
         "is_causal": True,
         "scale": 0.125,
         "qkv_layout": "BHSD",
+        "value_bias_amplitude": 0.0,
     }
 
 
@@ -70,3 +71,23 @@ def test_attention_inputs_follow_mha_and_gqa_shapes() -> None:
     assert query.shape == (2, 8, 5, 64)
     assert key.shape == value.shape == (2, 2, 7, 64)
     assert query.dtype is key.dtype is value.dtype is torch.float16
+
+
+def test_attention_inputs_add_reproducible_feature_value_bias() -> None:
+    shape = AttentionShape(1, 1, 3, 3, 64)
+    unbiased = make_attention_inputs(
+        shape,
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+        generator=torch.Generator().manual_seed(11),
+    )[2]
+    biased = make_attention_inputs(
+        shape,
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+        generator=torch.Generator().manual_seed(11),
+        value_bias_amplitude=8.0,
+    )[2]
+
+    expected = torch.linspace(-8, 8, 64).reshape(1, 1, 1, 64)
+    torch.testing.assert_close(biased - unbiased, expected.expand_as(biased))

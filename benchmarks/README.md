@@ -73,6 +73,10 @@ uv run python benchmarks/tune_piper_attention.py \
   --json artifacts/piper_attention_tuning.json
 ```
 
+The Piper tuner searches query tile sizes, warp counts, and pipeline stages. Use
+`--mixed-sign both` to include native UINT8 MMA and the affine signed-INT8 proxy, or
+restrict any launch axis with `--block-m`, `--num-warps`, and `--num-stages`.
+
 Use `--phase operator_end_to_end` to include preprocessing in the ranking. The default
 `prepared_execution` phase compares only the prepared fused recurrence. On targets where a
 candidate is unsupported, it remains in the report with `status: skipped`.
@@ -123,6 +127,10 @@ Every `BenchmarkRecord` includes:
 - Python, Torch, Triton, CUDA or ROCm runtime, and available driver versions;
 - Git revision and dirty-worktree state;
 - logical shape, provider configuration, phase timings, quality, and optional extras.
+
+Use `--value-bias-amplitude 8` to add a deterministic per-feature V bias spanning
+`[-8, 8]`. The amplitude is serialized in every provider configuration so biased-input
+quality reports cannot be confused with the default zero-mean synthetic regime.
 
 All benchmark CLIs retain their Markdown or terminal summaries. Add `--json PATH` to
 write a versioned JSON array or `--jsonl PATH` to write one compact record per line.
@@ -509,11 +517,79 @@ issue #11.
 | pure Triton SageAttention2++ | 32.43 | 2.292% | 0.002166 | 0.1250 | 28.18 |
 
 This ordinary call has little V bias, so centering is nearly neutral. The committed
-adversarial biased-V regression requires centering to reduce MSE by at least 5x and
-the constant-V regression requires exact restoration. On the exhaustive LTX-2.3
+adversarial biased-V regression requires centering to reduce MSE by at least 5x on
+SM12x and 4x on SM89, while the constant-V regression requires exact restoration. On
+the exhaustive LTX-2.3
 sci-fi trajectory from research checkpoint `b75f3ee`, stable centered-row ordering
 improved global attention-output SQNR from 39.12 to 39.52 dB; its rollout measured
 18.67 dB decoded PSNR and 9.60 dB latent SQNR against the exact render.
+
+### Piper Attention SM89 tuning baseline
+
+Issue #9 was tuned natively on Windows 11 using an RTX 4070 Ti SUPER (SM89, 16 GB),
+driver 596.49, Python 3.14.7, Torch 2.12.1+cu130, CUDA 13.0, and Triton-Windows
+3.7.1.post27. Inputs were BF16 B1/H8 self-attention unless noted. Candidate searches
+used the pointer load path, `BLOCK_N=64`, `BLOCK_M` in 32/64/128, four/eight warps, and
+two/three/four stages. Production dispatch is a frozen policy; it does not autotune in
+the user hot path.
+
+The representative B1/H8 dispatch points are:
+
+| execution | D64 | D128 |
+|:---|:---|:---|
+| non-causal N=512 | M64/W4/S3 | M32/W4/S3 |
+| non-causal N=1024 | M64/W4/S3 | M64/W4/S3 |
+| non-causal N>=2048 | M128/W4/S3 | M128/W4/S2 |
+| causal N=512 | M64/W4/S4 | M32/W4/S3 |
+| causal N>=1024 | M64/W4/S4 | M128/W8/S4 |
+
+The actual policy uses CTA coverage relative to the device SM count, so thresholds adapt
+to batch and head parallelism rather than matching only this table. Near-tied D64 stage
+counts varied within roughly one percent across repeated searches; S3 was retained for
+non-causal D64 because it was the stable matrix-wide choice. The complete candidate
+records, including H1/N131072 searches, are in `benchmarks/results/sm89/piper/`.
+
+At N=8192, native centered Piper measured:
+
+| execution | head dim | hot device p50 (ms) | complete wall p50 (ms) | SQNR vs SDPA (dB) | affine hot (ms) | SDPA hot (ms) |
+|:---|---:|---:|---:|---:|---:|---:|
+| non-causal | 64 | 0.921 | 1.446 | 37.19 | 1.004 | 2.086 |
+| non-causal | 128 | 1.409 | 1.844 | 36.85 | 1.618 | 5.394 |
+| causal | 64 | 0.665 | 1.058 | 38.15 | 0.750 | 1.218 |
+| causal | 128 | 1.030 | 1.552 | 37.61 | 1.119 | 2.630 |
+
+For B1/H1/N131072 non-causal attention, D64 measured 31.546 ms hot and 32.350 ms
+complete, versus 34.372/35.048 ms for affine and 71.251/71.555 ms for SDPA. D128
+measured 48.390/49.189 ms, versus 55.651/56.376 ms for affine and
+172.146/171.990 ms for SDPA. Hot device and complete wall phases are sampled
+independently, so their distributions are not expected to be arithmetically ordered.
+
+Centering is enabled by default for SM89 causal and non-causal calls at both head
+dimensions. With synthetic V feature bias amplitude 8 at N=1024, centered versus
+uncentered results were 62.03 versus 58.06 dB SQNR for non-causal D64, 61.89 versus
+58.03 dB for non-causal D128, and 59.38 versus 55.46 dB for causal D128. Complete
+operator medians differed by at most 0.007 ms in these three measurements. The
+adversarial low-noise regression improved MSE from 3.57e-5 to 7.92e-6 on SM89, and
+constant V is restored exactly on both full and ragged output tiles.
+
+Compiler reports for N=8192 record:
+
+| execution | head dim/formulation | registers/thread | spills | shared bytes/CTA | PTX signed QK MMA | PTX UINT8 x INT8 PV MMA |
+|:---|:---|---:|---:|---:|---:|---:|
+| non-causal | D64 native | 249 | 0 | 25,856 | 32 | 32 |
+| non-causal | D128 native | 255 | 6 | 33,408 | 64 | 64 |
+| non-causal | D64 affine | 223 | 0 | 25,856 | 64 total signed | 0 |
+| non-causal | D128 affine | 255 | 16 | 33,664 | 128 total signed | 0 |
+| causal | D64 native | 194 | 0 | 30,592 | 16 | 16 |
+| causal | D128 native | 255 | 0 | 67,456 | 32 | 32 |
+
+Native and affine outputs are exact matches in the dedicated regression. Native is the
+default on SM89 because it removes affine correction metadata and was 8-15% faster in
+the long D128 hot path in these runs. `nvdisasm` was not installed on the Windows test
+host, so committed compiler records contain PTX instruction summaries but no SASS
+summary. No agreed versioned real-model capture is currently present in the repository;
+the synthetic bias suite and the existing local LTX-2.3 results cover quality until the
+capture/replay format from issue #11 is available.
 
 ## Triton compiler inspection
 

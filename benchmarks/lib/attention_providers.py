@@ -234,6 +234,22 @@ def _make_piper_attention_provider(
         head_dim=query.shape[-1],
         key_length=key.shape[2],
     )
+    launch_configuration: dict[str, object] = {}
+    if query.device.type == "cuda":
+        schedule = piper_backend._default_piper_launch_schedule(
+            query,
+            key,
+            config.is_causal,
+        )
+        launch_configuration = {
+            "block_m": schedule.block_m,
+            "block_n": piper_backend._BLOCK_N,
+            "num_warps": schedule.num_warps,
+            "num_stages": schedule.num_stages,
+            "load_path": (
+                "tensor-descriptor" if schedule.use_tensor_descriptors else "pointer"
+            ),
+        }
 
     def prepare() -> object:
         return piper_attention_backend._prepare_piper_attention(
@@ -268,6 +284,7 @@ def _make_piper_attention_provider(
             "center_value": center_value,
             "value_row_order": "centered_range_ascending" if sort_value_rows else "original",
             "mixed_sign_mma": "native" if native_uint8 else "affine_proxy",
+            **launch_configuration,
         },
         triton_jit_functions=_piper_attention_jit_functions(
             target,

@@ -79,6 +79,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--measurement-time-ms", type=int, default=500)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
+        "--value-bias-amplitude",
+        type=float,
+        default=0.0,
+        help="add a per-feature synthetic V bias spanning [-amplitude, amplitude]",
+    )
+    parser.add_argument(
         "--profile-provider",
         choices=PROVIDER_NAMES,
         metavar="NAME",
@@ -109,6 +115,8 @@ def _validate_args(args: argparse.Namespace, provider_names: Sequence[str]) -> N
         raise SystemExit("batch size and heads must be positive")
     if args.warmup_ms < 0 or args.measurement_time_ms <= 0:
         raise SystemExit("warmup must be non-negative and measurement time must be positive")
+    if args.value_bias_amplitude < 0:
+        raise SystemExit("value bias amplitude must be non-negative")
     if (
         args.causal
         and args.kv_sequence is not None
@@ -299,6 +307,7 @@ def _main(argv: Sequence[str] | None = None) -> None:
         is_causal=args.causal,
         scale=args.scale,
         qkv_layout="BHSD",
+        value_bias_amplitude=args.value_bias_amplitude,
     )
     generator = torch.Generator(device=device).manual_seed(args.seed)
     records: list[BenchmarkRecord] = []
@@ -321,6 +330,7 @@ def _main(argv: Sequence[str] | None = None) -> None:
             dtype=_dtype(args.dtype),
             device=device,
             generator=generator,
+            value_bias_amplitude=args.value_bias_amplitude,
         )
         providers = make_attention_providers(
             inputs,

@@ -60,6 +60,7 @@ class AttentionConfig:
     is_causal: bool = False
     scale: float | None = None
     qkv_layout: str = "BHSD"
+    value_bias_amplitude: float = 0.0
 
     def as_dict(self) -> dict[str, str | bool | float | None]:
         """Return stable machine-readable field names."""
@@ -68,6 +69,7 @@ class AttentionConfig:
             "is_causal": self.is_causal,
             "scale": self.scale,
             "qkv_layout": self.qkv_layout,
+            "value_bias_amplitude": self.value_bias_amplitude,
         }
 
 
@@ -77,6 +79,7 @@ def make_attention_inputs(
     dtype: torch.dtype,
     device: torch.device,
     generator: torch.Generator,
+    value_bias_amplitude: float = 0.0,
 ) -> AttentionInputs:
     """Create reproducible random Q/K/V tensors for an attention shape."""
     query = torch.randn(
@@ -93,4 +96,13 @@ def make_attention_inputs(
     )
     key = torch.randn(key_shape, device=device, dtype=dtype, generator=generator)
     value = torch.randn(key_shape, device=device, dtype=dtype, generator=generator)
+    if value_bias_amplitude:
+        bias = torch.linspace(
+            -value_bias_amplitude,
+            value_bias_amplitude,
+            shape.head_dim,
+            device=device,
+            dtype=torch.float32,
+        ).reshape(1, 1, 1, shape.head_dim)
+        value = (value.float() + bias).to(dtype)
     return query, key, value

@@ -157,7 +157,9 @@ def capture_environment(repository: Path | None = None) -> EnvironmentInfo:
         python_version=sys.version.split()[0],
         platform=platform.platform(),
         torch_version=str(torch.__version__),
-        triton_version=_package_version("triton"),
+        triton_version=(
+            _package_version("triton") or _package_version("triton-windows")
+        ),
         accelerator_backend=accelerator_backend,
         accelerator_runtime_version=runtime_version,
         accelerator_driver_version=driver_version,

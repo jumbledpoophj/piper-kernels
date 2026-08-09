@@ -50,6 +50,12 @@ All notable changes to Piper Kernels are documented here. Versions follow the po
   shapes while retaining the split preparation fallback everywhere else.
 - Moved the format-neutral ConvRot functional API out of the INT8 storage module and
   separated semantic custom operators from their optional Triton implementations.
+- Added offline-tuned SM89 Piper Attention dispatch for D64/D128 causal and non-causal
+  shapes, including the single-head 131072-token regime, and enabled centered V by
+  default on SM89 based on complete-operator and biased-input measurements.
+- Extended Piper Attention tuning and benchmark reports with launch schedules,
+  native/affine mixed-sign selection, biased-V input metadata, and Triton-Windows
+  version capture.
 
 ### Fixed
 

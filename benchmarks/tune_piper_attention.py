@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -31,6 +32,23 @@ from piper_kernels.attention.piper_attention.dispatch import _default_center_val
 _SCHEDULES = ("pointer", "tensor-descriptor")
 
 
+@dataclass(frozen=True, slots=True)
+class _PiperSchedule:
+    load_path: str
+    block_m: int
+    num_warps: int
+    num_stages: int
+    native_uint8: bool
+
+    @property
+    def name(self) -> str:
+        mma = "native" if self.native_uint8 else "affine"
+        return (
+            f"{self.load_path}-m{self.block_m}-w{self.num_warps}-"
+            f"s{self.num_stages}-{mma}"
+        )
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sequence", type=int, default=8192)
@@ -51,6 +69,36 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=_SCHEDULES,
         nargs="+",
         default=list(_SCHEDULES),
+    )
+    parser.add_argument(
+        "--block-m",
+        type=int,
+        choices=(32, 64, 128),
+        nargs="+",
+        default=[32, 64, 128],
+        help="query tile sizes to search",
+    )
+    parser.add_argument(
+        "--num-warps",
+        type=int,
+        choices=(4, 8),
+        nargs="+",
+        default=[4, 8],
+        help="warps per attention CTA to search",
+    )
+    parser.add_argument(
+        "--num-stages",
+        type=int,
+        choices=(2, 3, 4),
+        nargs="+",
+        default=[2, 3, 4],
+        help="software pipeline depths to search",
+    )
+    parser.add_argument(
+        "--mixed-sign",
+        choices=("native", "affine", "both"),
+        default="native",
+        help="UINT8 x INT8 formulation to search",
     )
     parser.add_argument(
         "--phase",
@@ -78,7 +126,7 @@ def _validate_args(args: argparse.Namespace) -> None:
 
 
 def _make_candidate(
-    schedule: str,
+    schedule: _PiperSchedule,
     inputs: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     *,
     scale: float,
@@ -88,12 +136,16 @@ def _make_candidate(
     target: AcceleratorTarget,
     common_configuration: Mapping[str, object],
 ) -> TuningCandidate[object, torch.Tensor]:
-    use_tensor_descriptors = schedule == "tensor-descriptor"
+    use_tensor_descriptors = schedule.load_path == "tensor-descriptor"
 
     def make_provider() -> BenchmarkProvider[object, torch.Tensor]:
         if use_tensor_descriptors and not target.is_cuda_capability(12):
             raise UnsupportedTuningCandidateError(
                 "the tensor-descriptor candidate currently targets SM12x"
+            )
+        if use_tensor_descriptors and schedule.block_m != 128:
+            raise UnsupportedTuningCandidateError(
+                "the tensor-descriptor candidate requires block_m=128"
             )
         query, key, value = inputs
 
@@ -105,9 +157,12 @@ def _make_candidate(
                 scale,
                 is_causal,
                 center_value,
-                native_uint8=True,
+                native_uint8=schedule.native_uint8,
                 sort_value_rows=sort_value_rows,
                 use_tensor_descriptors=use_tensor_descriptors,
+                block_m=schedule.block_m,
+                num_warps=schedule.num_warps,
+                num_stages=schedule.num_stages,
             )
 
         def run(prepared: object) -> torch.Tensor:
@@ -116,20 +171,25 @@ def _make_candidate(
             )
 
         return BenchmarkProvider(
-            name=f"piper_attention_{schedule.replace('-', '_')}",
+            name=f"piper_attention_{schedule.name.replace('-', '_')}",
             prepare=prepare,
             run=run,
             synchronize=torch.cuda.synchronize,
         )
 
     return TuningCandidate(
-        name=schedule,
+        name=schedule.name,
         configuration={
             **common_configuration,
             "algorithm": "piper_attention",
-            "load_path": schedule,
+            "load_path": schedule.load_path,
+            "block_m": schedule.block_m,
+            "block_n": piper_attention_backend._BLOCK_N,
+            "num_warps": schedule.num_warps,
+            "num_stages": schedule.num_stages,
             "center_value": center_value,
             "value_row_order": ("centered_range_ascending" if sort_value_rows else "original"),
+            "mixed_sign_mma": "native" if schedule.native_uint8 else "affine_proxy",
         },
         make_provider=make_provider,
     )
@@ -189,9 +249,20 @@ def _main(argv: Sequence[str] | None = None) -> None:
         "scale": scale,
         "seed": args.seed,
     }
+    native_options = {
+        "native": (True,),
+        "affine": (False,),
+        "both": (True, False),
+    }[args.mixed_sign]
     candidates = tuple(
         _make_candidate(
-            schedule,
+            _PiperSchedule(
+                schedule,
+                block_m,
+                num_warps,
+                num_stages,
+                native_uint8,
+            ),
             inputs,
             scale=scale,
             is_causal=args.causal,
@@ -201,6 +272,10 @@ def _main(argv: Sequence[str] | None = None) -> None:
             common_configuration=common_configuration,
         )
         for schedule in args.schedules
+        for block_m in args.block_m
+        for num_warps in args.num_warps
+        for num_stages in args.num_stages
+        for native_uint8 in native_options
     )
     expected = torch.nn.functional.scaled_dot_product_attention(
         query,
