@@ -13,6 +13,7 @@ from piper_kernels._triton.targets import AcceleratorTarget
 from piper_kernels.attention.piper_attention._policy import select_execution_plan
 
 _SM120 = AcceleratorTarget(backend="cuda", architecture="sm120")
+_SM89 = AcceleratorTarget(backend="cuda", architecture="sm89")
 
 
 def _production_plan(*, is_causal: bool = False):
@@ -26,6 +27,17 @@ def _production_plan(*, is_causal: bool = False):
     )
 
 
+def _sm89_production_plan():
+    return select_execution_plan(
+        _SM89,
+        candidate_block_m=128,
+        query_length=8192,
+        key_length=8192,
+        head_dim=128,
+        is_causal=False,
+    )
+
+
 def test_tuner_defaults_to_production_plan() -> None:
     arguments = _parse_args([])
 
@@ -36,6 +48,12 @@ def test_tuner_defaults_to_production_plan() -> None:
     assert arguments.num_warps is None
     assert arguments.num_stages is None
     assert arguments.use_packed_probability_conversion is None
+    assert arguments.use_sm89_d128_specialization is None
+    assert arguments.use_shared_value_scale is None
+    assert arguments.use_fused_kv_preprocessing is None
+    assert arguments.use_fp16_value_scale is None
+    assert arguments.scaled_fp16_numerator is None
+    assert arguments.round_probability_codes is None
 
 
 def test_omitted_axes_measure_only_the_production_plan() -> None:
@@ -86,6 +104,51 @@ def test_probability_conversion_boolean_override(option: str, expected: bool) ->
     plans = _candidate_plans(arguments, _production_plan())
 
     assert [plan.use_packed_probability_conversion for plan in plans] == [expected]
+
+
+def test_sm89_generic_ablation_resets_specialized_only_fields() -> None:
+    arguments = _parse_args(
+        [
+            "--no-use-sm89-d128-specialization",
+            "--use-packed-probability-conversion",
+        ]
+    )
+
+    plans = _candidate_plans(arguments, _sm89_production_plan())
+
+    assert len(plans) == 1
+    plan = plans[0]
+    assert not plan.use_sm89_d128_specialization
+    assert not plan.split_pv_head_dim
+    assert not plan.scaled_fp16_numerator
+    assert not plan.use_shared_value_scale
+    assert not plan.use_fused_kv_preprocessing
+    assert not plan.use_fp16_value_scale
+    assert plan.round_probability_codes
+    assert plan.use_packed_probability_conversion
+    assert plan.loop_num_stages is None
+    assert not plan.loop_licm
+
+
+@pytest.mark.parametrize(
+    ("options", "field", "expected"),
+    [
+        (["--use-shared-value-scale"], "use_shared_value_scale", True),
+        (["--no-use-fused-kv-preprocessing"], "use_fused_kv_preprocessing", False),
+        (["--no-use-fp16-value-scale"], "use_fp16_value_scale", False),
+        (["--no-scaled-fp16-numerator"], "scaled_fp16_numerator", False),
+        (["--no-round-probability-codes"], "round_probability_codes", False),
+    ],
+)
+def test_sm89_specialization_ablation_axes(
+    options: list[str],
+    field: str,
+    expected: bool,
+) -> None:
+    plans = _candidate_plans(_parse_args(options), _sm89_production_plan())
+
+    assert len(plans) == 1
+    assert getattr(plans[0], field) is expected
 
 
 def test_candidate_configuration_uses_raw_execution_plan_fields() -> None:

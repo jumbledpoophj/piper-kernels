@@ -47,10 +47,40 @@ _validate_args = validate_attention_tuning_arguments
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     add_attention_tuning_arguments(parser)
+    parser.add_argument(
+        "--use-sm89-d128-specialization",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--use-shared-value-scale",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--use-fused-kv-preprocessing",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--use-fp16-value-scale",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--scaled-fp16-numerator",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--round-probability-codes",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     return parser.parse_args(argv)
 
 
-def _candidate_plans(
+def _candidate_plans(  # noqa: PLR0912 - normalizes dependent plan axes
     args: argparse.Namespace,
     production_plan: piper_attention_policy.PiperAttentionExecutionPlan,
 ) -> tuple[piper_attention_policy.PiperAttentionExecutionPlan, ...]:
@@ -73,32 +103,120 @@ def _candidate_plans(
             args.use_packed_probability_conversion,
             production_plan.use_packed_probability_conversion,
         ),
+        boolean_tuning_axis(
+            args.use_sm89_d128_specialization,
+            production_plan.use_sm89_d128_specialization,
+        ),
+        boolean_tuning_axis(
+            args.use_shared_value_scale,
+            production_plan.use_shared_value_scale,
+        ),
+        boolean_tuning_axis(
+            args.use_fused_kv_preprocessing,
+            production_plan.use_fused_kv_preprocessing,
+        ),
+        boolean_tuning_axis(
+            args.use_fp16_value_scale,
+            production_plan.use_fp16_value_scale,
+        ),
+        boolean_tuning_axis(
+            args.scaled_fp16_numerator,
+            production_plan.scaled_fp16_numerator,
+        ),
+        boolean_tuning_axis(
+            args.round_probability_codes,
+            production_plan.round_probability_codes,
+        ),
     )
-    validate_tuning_candidate_count(axes, args.max_candidates)
-    plans = tuple(
-        replace(
-            production_plan,
-            block_m=block_m,
-            num_warps=num_warps,
-            num_stages=num_stages,
-            use_tensor_descriptors=use_tensor_descriptors,
-            reverse_causal_blocks=reverse_causal_blocks,
-            loop_num_stages=loop_num_stages,
-            loop_licm=loop_licm,
-            use_packed_probability_conversion=use_packed_probability_conversion,
-        )
-        for (
-            block_m,
-            num_warps,
-            num_stages,
-            use_tensor_descriptors,
-            reverse_causal_blocks,
-            loop_num_stages,
-            loop_licm,
-            use_packed_probability_conversion,
-        ) in product(*axes)
-    )
-    return plans
+    plans: list[piper_attention_policy.PiperAttentionExecutionPlan] = []
+    for (
+        block_m,
+        num_warps,
+        num_stages,
+        use_tensor_descriptors,
+        reverse_causal_blocks,
+        loop_num_stages,
+        loop_licm,
+        use_packed_probability_conversion,
+        use_sm89_d128_specialization,
+        use_shared_value_scale,
+        use_fused_kv_preprocessing,
+        use_fp16_value_scale,
+        scaled_fp16_numerator,
+        round_probability_codes,
+    ) in product(*axes):
+        candidate_shared_value_scale = use_shared_value_scale
+        candidate_fused_kv_preprocessing = use_fused_kv_preprocessing
+        candidate_fp16_value_scale = use_fp16_value_scale
+        candidate_scaled_fp16_numerator = scaled_fp16_numerator
+        candidate_round_probability_codes = round_probability_codes
+        candidate_loop_num_stages = loop_num_stages
+        candidate_loop_licm = loop_licm
+        if candidate_shared_value_scale and args.use_fp16_value_scale is None:
+            candidate_fp16_value_scale = False
+        if not use_sm89_d128_specialization and production_plan.use_sm89_d128_specialization:
+            if args.use_shared_value_scale is None:
+                candidate_shared_value_scale = False
+            if args.use_fused_kv_preprocessing is None:
+                candidate_fused_kv_preprocessing = False
+            if args.use_fp16_value_scale is None:
+                candidate_fp16_value_scale = False
+            if args.scaled_fp16_numerator is None:
+                candidate_scaled_fp16_numerator = False
+            if args.round_probability_codes is None:
+                candidate_round_probability_codes = True
+            if args.loop_num_stages is None:
+                candidate_loop_num_stages = None
+            if args.loop_licm is None:
+                candidate_loop_licm = False
+        if (
+            production_plan.use_sm89_d128_specialization
+            and not use_sm89_d128_specialization
+            and (
+                candidate_shared_value_scale
+                or candidate_fused_kv_preprocessing
+                or candidate_fp16_value_scale
+                or candidate_scaled_fp16_numerator
+                or not candidate_round_probability_codes
+            )
+        ):
+            continue
+        try:
+            plan = replace(
+                production_plan,
+                block_m=block_m,
+                num_warps=num_warps,
+                num_stages=num_stages,
+                use_tensor_descriptors=use_tensor_descriptors,
+                reverse_causal_blocks=reverse_causal_blocks,
+                loop_num_stages=candidate_loop_num_stages,
+                loop_licm=candidate_loop_licm,
+                use_packed_probability_conversion=use_packed_probability_conversion,
+                use_sm89_d128_specialization=use_sm89_d128_specialization,
+                use_shared_value_scale=candidate_shared_value_scale,
+                use_fused_kv_preprocessing=candidate_fused_kv_preprocessing,
+                use_fp16_value_scale=candidate_fp16_value_scale,
+                split_pv_head_dim=(
+                    use_sm89_d128_specialization
+                    if production_plan.use_sm89_d128_specialization
+                    else production_plan.split_pv_head_dim
+                ),
+                scaled_fp16_numerator=(
+                    candidate_scaled_fp16_numerator
+                    if (
+                        use_sm89_d128_specialization
+                        or not production_plan.use_sm89_d128_specialization
+                    )
+                    else False
+                ),
+                round_probability_codes=candidate_round_probability_codes,
+            )
+        except ValueError:
+            continue
+        if plan not in plans:
+            plans.append(plan)
+    validate_tuning_candidate_count((plans,), args.max_candidates)
+    return tuple(plans)
 
 
 def _plan_name(plan: piper_attention_policy.PiperAttentionExecutionPlan) -> str:
@@ -107,9 +225,17 @@ def _plan_name(plan: piper_attention_policy.PiperAttentionExecutionPlan) -> str:
     block_order = "reverse" if plan.reverse_causal_blocks else "forward"
     licm = "licm" if plan.loop_licm else "no-licm"
     probability_conversion = "packed-p" if plan.use_packed_probability_conversion else "stock-p"
+    kernel = "sm89-d128" if plan.use_sm89_d128_specialization else "generic"
+    value_scale = "shared-v64" if plan.use_shared_value_scale else "per-key-v"
+    accumulator = "split-fp16" if plan.scaled_fp16_numerator else "fp32"
+    preprocessing = "fused-kv" if plan.use_fused_kv_preprocessing else "stock-prep"
+    value_scale_storage = "fp16-vscale" if plan.use_fp16_value_scale else "fp32-vscale"
+    probability_rounding = "round-p" if plan.round_probability_codes else "truncate-p"
     return (
-        f"{load_path}-m{plan.block_m}-w{plan.num_warps}-s{plan.num_stages}-"
-        f"{block_order}-loop{loop_stages}-{licm}-{probability_conversion}"
+        f"{kernel}-{load_path}-m{plan.block_m}-w{plan.num_warps}-s{plan.num_stages}-"
+        f"{block_order}-loop{loop_stages}-{licm}-{probability_conversion}-"
+        f"{value_scale}-{value_scale_storage}-{accumulator}-{preprocessing}-"
+        f"{probability_rounding}"
     )
 
 
