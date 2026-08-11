@@ -89,6 +89,7 @@ def _generic_plan(
         use_fp16_value_scale=False,
         derive_value_scale_multiplier=False,
         use_hybrid_fp32_fp16_numerator=False,
+        use_strided_kv_mean_sample=False,
         split_pv_head_dim=False,
         scaled_fp16_numerator=False,
         loop_num_stages=None,

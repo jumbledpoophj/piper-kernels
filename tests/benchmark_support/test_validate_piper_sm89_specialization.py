@@ -40,6 +40,7 @@ def test_generic_control_disables_every_specialized_axis() -> None:
     assert not plan.use_fp16_value_scale
     assert not plan.derive_value_scale_multiplier
     assert not plan.use_hybrid_fp32_fp16_numerator
+    assert not plan.use_strided_kv_mean_sample
     assert not plan.use_packed_probability_conversion
     assert plan.round_probability_codes
 

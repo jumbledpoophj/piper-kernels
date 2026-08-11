@@ -148,6 +148,7 @@ def test_sm89_specialization_is_exactly_scoped(
         assert plan.use_fp16_value_scale
         assert plan.derive_value_scale_multiplier is (key_length < 131072)
         assert plan.use_hybrid_fp32_fp16_numerator is (key_length >= 131072)
+        assert plan.use_strided_kv_mean_sample is (key_length == 131072)
         assert plan.round_probability_codes
         assert plan.num_stages == 1
         assert plan.loop_num_stages == 3
@@ -195,6 +196,7 @@ def test_execution_plan_serializes_all_launch_choices() -> None:
         "use_fp16_value_scale": False,
         "derive_value_scale_multiplier": False,
         "use_hybrid_fp32_fp16_numerator": False,
+        "use_strided_kv_mean_sample": False,
         "round_probability_codes": True,
     }
 
@@ -232,6 +234,7 @@ def test_execution_plan_rejects_reverse_order_for_noncausal_invocation() -> None
         {"use_fp16_value_scale": True},
         {"derive_value_scale_multiplier": True},
         {"use_hybrid_fp32_fp16_numerator": True},
+        {"use_strided_kv_mean_sample": True},
         {"round_probability_codes": False},
     ],
 )

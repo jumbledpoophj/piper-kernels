@@ -33,6 +33,7 @@ from . import _policy
 
 _BLOCK_N = 64
 _MEAN_CHUNK_N = 1024
+_MEAN_SAMPLE_N = 65536
 _MEAN_BLOCK_N = 64
 _MEAN_BLOCK_D = 64
 _P_UINT8_RANGE = tl.constexpr(255.0)
@@ -74,6 +75,8 @@ def _kv_mean_partial_kernel(
     key_partial_ptr,
     value_partial_ptr,
     key_length,
+    sample_count,
+    sample_stride,
     num_chunks,
     stride_kb,
     stride_kh,
@@ -101,8 +104,13 @@ def _kv_mean_partial_kernel(
         value_accumulator = tl.zeros((block_d,), dtype=tl.float32)
     chunk_start = chunk * chunk_n
     for offset in tl.range(0, chunk_n, block_n, disable_licm=True):
-        current_n = chunk_start + offset + offsets_n
-        mask = (current_n[:, None] < key_length) & (offsets_d[None, :] < head_dim)
+        sample_offset = chunk_start + offset + offsets_n
+        current_n = sample_offset * sample_stride
+        mask = (
+            (sample_offset[:, None] < sample_count)
+            & (current_n[:, None] < key_length)
+            & (offsets_d[None, :] < head_dim)
+        )
         key = tl.load(
             key_ptr
             + batch * stride_kb
@@ -1134,9 +1142,12 @@ def _compute_kv_means(
     value: torch.Tensor,
     *,
     is_causal: bool,
+    use_strided_sample: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     batch, heads, key_length, head_dim = key.shape
-    num_chunks = int(triton.cdiv(key_length, _MEAN_CHUNK_N))
+    sample_count = min(key_length, _MEAN_SAMPLE_N) if use_strided_sample else key_length
+    sample_stride = max(key_length // sample_count, 1) if use_strided_sample else 1
+    num_chunks = int(triton.cdiv(sample_count, _MEAN_CHUNK_N))
     partial_shape = (batch, heads, num_chunks, head_dim)
     key_partial = torch.empty(partial_shape, device=key.device, dtype=torch.float32)
     value_partial = (
@@ -1162,6 +1173,8 @@ def _compute_kv_means(
         key_partial,
         value_partial,
         key_length,
+        sample_count,
+        sample_stride,
         num_chunks,
         key.stride(0),
         key.stride(1),
@@ -1182,7 +1195,7 @@ def _compute_kv_means(
         value_partial,
         key_mean,
         value_mean,
-        key_length,
+        sample_count,
         num_chunks,
         is_causal=is_causal,
         head_dim=head_dim,
@@ -1306,6 +1319,7 @@ def _prepare_piper_attention(
         key,
         value,
         is_causal=is_causal,
+        use_strided_sample=plan.use_strided_kv_mean_sample,
     )
     if plan.use_fused_kv_preprocessing:
         query_int8 = torch.empty_like(query, dtype=torch.int8)

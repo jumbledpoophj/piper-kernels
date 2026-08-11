@@ -54,6 +54,7 @@ def test_tuner_defaults_to_production_plan() -> None:
     assert arguments.use_fp16_value_scale is None
     assert arguments.derive_value_scale_multiplier is None
     assert arguments.use_hybrid_fp32_fp16_numerator is None
+    assert arguments.use_strided_kv_mean_sample is None
     assert arguments.scaled_fp16_numerator is None
     assert arguments.round_probability_codes is None
 
@@ -128,6 +129,7 @@ def test_sm89_generic_ablation_resets_specialized_only_fields() -> None:
     assert not plan.use_fp16_value_scale
     assert not plan.derive_value_scale_multiplier
     assert not plan.use_hybrid_fp32_fp16_numerator
+    assert not plan.use_strided_kv_mean_sample
     assert plan.round_probability_codes
     assert plan.use_packed_probability_conversion
     assert plan.loop_num_stages is None
@@ -148,6 +150,11 @@ def test_sm89_generic_ablation_resets_specialized_only_fields() -> None:
         (
             ["--use-hybrid-fp32-fp16-numerator"],
             "use_hybrid_fp32_fp16_numerator",
+            True,
+        ),
+        (
+            ["--use-strided-kv-mean-sample"],
+            "use_strided_kv_mean_sample",
             True,
         ),
         (["--no-scaled-fp16-numerator"], "scaled_fp16_numerator", False),

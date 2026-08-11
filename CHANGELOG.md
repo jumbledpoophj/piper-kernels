@@ -17,9 +17,9 @@ All notable changes to Piper Kernels are documented here. Versions follow the po
 
 - Piper's SM89 production policy retains per-key V scaling and probability rounding, derives
   the short-context V multiplier from its loaded FP16 coordinate, uses split-FP16 accumulation
-  at 8K and 32K, and uses a spill-reducing FP32/FP16 hybrid at 128K. Every retained
-  configuration clears the 0.5 dB current-main quality gate. Causal and generic attention
-  kernels are unchanged.
+  at 8K and 32K, and uses a spill-reducing FP32/FP16 hybrid plus a half-sequence strided mean
+  sample at 128K. Every retained configuration clears the 0.5 dB current-main quality gate.
+  Causal and generic attention kernels are unchanged.
 - Shared Sage-style Q/K reference and Triton preparation now have one implementation across
   Piper Attention and SageAttention2++. Benchmark tooling now verifies the pinned canonical
   SageAttention installation before recording provenance, participates in the standard type and

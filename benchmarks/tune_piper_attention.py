@@ -78,6 +78,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
     )
     parser.add_argument(
+        "--use-strided-kv-mean-sample",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
         "--scaled-fp16-numerator",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -90,7 +95,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _candidate_plans(  # noqa: PLR0912 - normalizes dependent plan axes
+def _candidate_plans(  # noqa: PLR0912, PLR0915 - normalizes dependent plan axes
     args: argparse.Namespace,
     production_plan: piper_attention_policy.PiperAttentionExecutionPlan,
 ) -> tuple[piper_attention_policy.PiperAttentionExecutionPlan, ...]:
@@ -138,6 +143,10 @@ def _candidate_plans(  # noqa: PLR0912 - normalizes dependent plan axes
             production_plan.use_hybrid_fp32_fp16_numerator,
         ),
         boolean_tuning_axis(
+            args.use_strided_kv_mean_sample,
+            production_plan.use_strided_kv_mean_sample,
+        ),
+        boolean_tuning_axis(
             args.scaled_fp16_numerator,
             production_plan.scaled_fp16_numerator,
         ),
@@ -162,6 +171,7 @@ def _candidate_plans(  # noqa: PLR0912 - normalizes dependent plan axes
         use_fp16_value_scale,
         derive_value_scale_multiplier,
         use_hybrid_fp32_fp16_numerator,
+        use_strided_kv_mean_sample,
         scaled_fp16_numerator,
         round_probability_codes,
     ) in product(*axes):
@@ -170,6 +180,7 @@ def _candidate_plans(  # noqa: PLR0912 - normalizes dependent plan axes
         candidate_fp16_value_scale = use_fp16_value_scale
         candidate_derive_value_scale_multiplier = derive_value_scale_multiplier
         candidate_hybrid_numerator = use_hybrid_fp32_fp16_numerator
+        candidate_strided_mean_sample = use_strided_kv_mean_sample
         candidate_scaled_fp16_numerator = scaled_fp16_numerator
         candidate_round_probability_codes = round_probability_codes
         candidate_loop_num_stages = loop_num_stages
@@ -197,6 +208,8 @@ def _candidate_plans(  # noqa: PLR0912 - normalizes dependent plan axes
                 candidate_derive_value_scale_multiplier = False
             if args.use_hybrid_fp32_fp16_numerator is None:
                 candidate_hybrid_numerator = False
+            if args.use_strided_kv_mean_sample is None:
+                candidate_strided_mean_sample = False
             if args.scaled_fp16_numerator is None:
                 candidate_scaled_fp16_numerator = False
             if args.round_probability_codes is None:
@@ -214,6 +227,7 @@ def _candidate_plans(  # noqa: PLR0912 - normalizes dependent plan axes
                 or candidate_fp16_value_scale
                 or candidate_derive_value_scale_multiplier
                 or candidate_hybrid_numerator
+                or candidate_strided_mean_sample
                 or candidate_scaled_fp16_numerator
                 or not candidate_round_probability_codes
             )
@@ -236,6 +250,7 @@ def _candidate_plans(  # noqa: PLR0912 - normalizes dependent plan axes
                 use_fp16_value_scale=candidate_fp16_value_scale,
                 derive_value_scale_multiplier=candidate_derive_value_scale_multiplier,
                 use_hybrid_fp32_fp16_numerator=candidate_hybrid_numerator,
+                use_strided_kv_mean_sample=candidate_strided_mean_sample,
                 split_pv_head_dim=(
                     use_sm89_d128_specialization
                     if production_plan.use_sm89_d128_specialization
@@ -274,11 +289,13 @@ def _plan_name(plan: piper_attention_policy.PiperAttentionExecutionPlan) -> str:
         "derived-vscale" if plan.derive_value_scale_multiplier else "loaded-vscale"
     )
     numerator = "hybrid-acc" if plan.use_hybrid_fp32_fp16_numerator else accumulator
+    mean_preprocessing = "sampled-mean" if plan.use_strided_kv_mean_sample else "exact-mean"
     probability_rounding = "round-p" if plan.round_probability_codes else "truncate-p"
     return (
         f"{kernel}-{load_path}-m{plan.block_m}-w{plan.num_warps}-s{plan.num_stages}-"
         f"{block_order}-loop{loop_stages}-{licm}-{probability_conversion}-"
         f"{value_scale}-{value_scale_storage}-{value_scale_load}-{numerator}-{preprocessing}-"
+        f"{mean_preprocessing}-"
         f"{probability_rounding}"
     )
 

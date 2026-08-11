@@ -33,6 +33,7 @@ class PiperAttentionExecutionPlan:
     use_fp16_value_scale: bool = False
     derive_value_scale_multiplier: bool = False
     use_hybrid_fp32_fp16_numerator: bool = False
+    use_strided_kv_mean_sample: bool = False
     round_probability_codes: bool = True
 
     def __post_init__(self) -> None:  # noqa: PLR0912 - plan invariants stay explicit
@@ -76,6 +77,8 @@ class PiperAttentionExecutionPlan:
             raise ValueError("hybrid numerator accumulation requires the FP32 recurrence path")
         if self.use_hybrid_fp32_fp16_numerator and self.use_shared_value_scale:
             raise ValueError("hybrid numerator accumulation requires per-key V scaling")
+        if self.use_strided_kv_mean_sample and not self.use_sm89_d128_specialization:
+            raise ValueError("strided K/V mean sampling requires the SM89 D128 specialization")
         if not self.round_probability_codes and not self.use_sm89_d128_specialization:
             raise ValueError("probability truncation requires the SM89 D128 specialization")
 
@@ -165,6 +168,9 @@ def select_execution_plan(
         ),
         use_hybrid_fp32_fp16_numerator=(
             use_sm89_d128_specialization and key_length >= 131072
+        ),
+        use_strided_kv_mean_sample=(
+            use_sm89_d128_specialization and key_length == 131072
         ),
         round_probability_codes=True,
     )

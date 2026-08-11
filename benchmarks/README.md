@@ -108,8 +108,9 @@ The SM89/D128 follow-up axes are also explicit: generic versus dedicated kernel,
 versus packed probability conversion, per-key versus shared-64-key V scaling, FP32 versus
 split-FP16 numerator accumulation, FP32 versus FP16 per-key scale storage, fused versus
 unfused Q/K/V preprocessing, loaded versus reconstructed per-key multipliers, hybrid
-FP32/FP16 accumulation, and probability rounding versus truncation. The specialized fields
-are rejected outside their exact non-causal aligned SM89/D128 long-context scope.
+FP32/FP16 accumulation, exact versus strided-sampled K/V means, and probability rounding versus
+truncation. The specialized fields are rejected outside their exact non-causal aligned
+SM89/D128 long-context scope.
 
 Run the production quality gate and the complete requested ablation matrix with:
 
