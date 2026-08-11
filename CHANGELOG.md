@@ -9,9 +9,16 @@ All notable changes to Piper Kernels are documented here. Versions follow the po
 
 - Quality-gated offline ConvRot INT8 forward-linear execution-plan tuning across dynamic
   preparation and GEMM schedules, with stratified large-shape output validation.
+- A non-causal aligned SM89/D128 long-context Piper specialization with a dedicated attention
+  kernel, exact fused K/V preprocessing, packed probability conversion, compact FP16 per-key
+  scale storage, and an independently reproducible multi-seed relative-quality validator.
 
 ### Changed
 
+- Piper's SM89 production policy retains per-key V scaling and probability rounding, uses
+  split-FP16 numerator accumulation only at 8K and 32K, and switches to FP32 accumulation at
+  128K so every retained configuration clears the 0.5 dB current-main quality gate. Causal and
+  generic attention kernels are unchanged.
 - Shared Sage-style Q/K reference and Triton preparation now have one implementation across
   Piper Attention and SageAttention2++. Benchmark tooling now verifies the pinned canonical
   SageAttention installation before recording provenance, participates in the standard type and

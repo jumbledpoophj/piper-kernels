@@ -101,9 +101,11 @@ It follows FlashAttention's fused online-softmax structure and SageAttention's K
 smoothing plus INT8 QK quantization. Its distinct PV path quantizes each V key row
 with one signed-INT8 scale, folds those scales into nonnegative probabilities, and
 uses `UINT8 x INT8 -> INT32` tensor-core products. The probability multiplier remains
-FP32 so every finite FP16 input scale is representable without a conversion in the hot
-loop. FP32 also remains the softmax and denominator coordinate; the selected long SM12x
-D128 schedule buffers a bounded PV numerator in FP16.
+FP32 on the generic path so every finite FP16 input scale is representable without a
+conversion in the hot loop. FP32 also remains the softmax and denominator coordinate.
+The quality-gated SM89/D128 long-context specialization stores the per-key multiplier in
+FP16, buffers the bounded PV numerator in FP16 at 8K and 32K, and retains FP32 numerator
+accumulation at 128K.
 
 For centered V, Piper Attention uses the exact identity
 
@@ -128,6 +130,13 @@ non-causal D128, while causal D128 retains the faster stock conversion. SM89 and
 have measured schedules; Ampere currently uses the generic schedule. Hopper lowers the
 operation through unsupported WGMMA and therefore uses the slow portable quantized
 reference. Native ROCm mixed-sign lowering remains future work.
+
+Aligned non-causal SM89 self-attention with D128 and sequence length at least 8K uses a
+dedicated kernel and separate fused K/V preprocessing kernel. The fused preprocessing
+reproduces the unfused quantized tensors and metadata exactly. Production retains per-key V
+scaling and probability rounding; shared-64-key V scaling and truncation remain offline
+ablation choices because they do not clear the relative quality gate. Causal attention and
+all other shapes continue to use the generic kernel.
 
 Piper Attention is an independently developed Sage-derived design. The per-key
 quantizer, centering identity, and online-softmax lineage are not claimed as novel in

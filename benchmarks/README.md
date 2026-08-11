@@ -104,6 +104,28 @@ uv run python benchmarks/tune_piper_attention.py \
   --json artifacts/piper_attention_execution_plan.json
 ```
 
+The SM89/D128 follow-up axes are also explicit: generic versus dedicated kernel, stock
+versus packed probability conversion, per-key versus shared-64-key V scaling, FP32 versus
+split-FP16 numerator accumulation, FP32 versus FP16 per-key scale storage, fused versus
+unfused K/V preprocessing, and probability rounding versus truncation. The specialized
+fields are rejected outside their exact non-causal aligned SM89/D128 long-context scope.
+
+Run the production quality gate and the complete requested ablation matrix with:
+
+```shell
+uv run python benchmarks/validate_piper_sm89_specialization.py \
+  --sequences 8192 32768 131072 \
+  --seeds 0 1 2 \
+  --json artifacts/piper_sm89_validation.json
+```
+
+The validator compares every production candidate against current-main generic Piper on
+identical inputs, requires both global and worst-head SQNR to remain within 0.5 dB, rejects
+new non-finite outputs or more than 0.1 percentage point of quantizer saturation increase,
+and runs biased-V and constant-V regressions. It records prepared device time and complete
+operator wall time. Pass `--capture PATH` to apply the same global and worst-head checks to
+a real-model `query`/`key`/`value` tensor mapping.
+
 The SageAttention2++ adapter searches the same immutable execution-plan fields used by
 production dispatch. Omitted axes retain the production value; values supplied for multiple
 axes form a Cartesian search, capped at 256 candidates by default:
