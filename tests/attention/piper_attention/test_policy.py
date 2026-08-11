@@ -60,7 +60,7 @@ def test_default_execution_plan_supports_meta_tensors_with_resolved_target() -> 
     ("target", "grouped_qk", "split_pv", "descriptors", "packed_probability"),
     [
         (_SM80, False, False, False, False),
-        (_SM89, False, False, False, False),
+        (_SM89, False, True, False, True),
         (_SM120, True, True, True, True),
         (_SM121, True, True, True, False),
     ],
@@ -110,6 +110,47 @@ def test_sm89_does_not_inherit_sage_attention_schedule() -> None:
     assert not plan.loop_licm
 
 
+@pytest.mark.parametrize(
+    ("query_length", "key_length", "head_dim", "is_causal", "expected"),
+    [
+        (8192, 8192, 128, False, True),
+        (32768, 32768, 128, False, True),
+        (131072, 131072, 128, False, True),
+        (8191, 8191, 128, False, False),
+        (8192, 8192, 64, False, False),
+        (8192, 16384, 128, False, False),
+        (8192, 8192, 128, True, False),
+    ],
+)
+def test_sm89_specialization_is_exactly_scoped(
+    query_length: int,
+    key_length: int,
+    head_dim: int,
+    is_causal: bool,
+    expected: bool,
+) -> None:
+    plan = _select(
+        _SM89,
+        query_length=query_length,
+        key_length=key_length,
+        head_dim=head_dim,
+        is_causal=is_causal,
+    )
+
+    assert plan.use_sm89_d128_specialization is expected
+    if expected:
+        assert plan.block_m == 128
+        assert plan.split_pv_head_dim
+        assert plan.scaled_fp16_numerator is (key_length < 131072)
+        assert plan.use_packed_probability_conversion
+        assert not plan.use_shared_value_scale
+        assert plan.use_fused_kv_preprocessing
+        assert plan.use_fp16_value_scale
+        assert plan.round_probability_codes
+        assert plan.loop_num_stages == (3 if key_length < 131072 else None)
+        assert plan.loop_licm is (key_length < 131072)
+
+
 def test_alternate_plan_can_disable_tensor_descriptors() -> None:
     descriptor_plan = _select(_SM120)
     pointer_plan = replace(
@@ -145,6 +186,11 @@ def test_execution_plan_serializes_all_launch_choices() -> None:
         "loop_num_stages": 2,
         "loop_licm": True,
         "use_packed_probability_conversion": False,
+        "use_sm89_d128_specialization": False,
+        "use_shared_value_scale": False,
+        "use_fused_kv_preprocessing": False,
+        "use_fp16_value_scale": False,
+        "round_probability_codes": True,
     }
 
 
@@ -175,6 +221,11 @@ def test_execution_plan_rejects_reverse_order_for_noncausal_invocation() -> None
         {"loop_num_stages": 5},
         {"split_pv_head_dim": False, "scaled_fp16_numerator": True},
         {"native_uint8": False, "use_packed_probability_conversion": True},
+        {"native_uint8": False, "use_sm89_d128_specialization": True},
+        {"use_shared_value_scale": True},
+        {"use_fused_kv_preprocessing": True},
+        {"use_fp16_value_scale": True},
+        {"round_probability_codes": False},
     ],
 )
 def test_execution_plan_rejects_inconsistent_specializations(

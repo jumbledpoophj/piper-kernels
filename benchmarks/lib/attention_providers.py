@@ -14,6 +14,7 @@ import torch
 from piper_kernels import sage_attention_2pp
 from piper_kernels._triton.targets import AcceleratorTarget
 from piper_kernels.attention.kernels.qk_quantization.int8.sage import triton as qk_backend
+from piper_kernels.attention.piper_attention import _policy as piper_attention_policy
 from piper_kernels.attention.piper_attention import triton as piper_attention_backend
 from piper_kernels.attention.sage_attention_2pp import _policy as sage_attention_2pp_policy
 from piper_kernels.attention.sage_attention_2pp import triton as sage_attention_2pp_backend
@@ -208,8 +209,32 @@ def _sage_attention_2pp_jit_functions(
 
 def _piper_attention_jit_functions(
     target: AcceleratorTarget,
+    plan: piper_attention_policy.PiperAttentionExecutionPlan,
 ) -> dict[str, object]:
     qk_kernels = _qk_jit_functions(target)
+    if plan.use_sm89_d128_specialization:
+        quantization_kernels = {
+            "quantize-query-per-thread": qk_kernels["quantize-query-per-thread"],
+        }
+        if plan.use_fused_kv_preprocessing:
+            quantization_kernels["quantize-sm89-d128-key-value"] = (
+                piper_attention_backend._quantize_sm89_d128_key_value_kernel
+            )
+        else:
+            quantization_kernels["quantize-key-per-thread"] = qk_kernels["quantize-key-per-thread"]
+            quantization_kernels[
+                "quantize-value-shared" if plan.use_shared_value_scale else "quantize-value-per-key"
+            ] = (
+                piper_attention_backend._quantize_value_shared_kernel
+                if plan.use_shared_value_scale
+                else piper_attention_backend._quantize_value_per_key_kernel
+            )
+        return {
+            "kv-mean-partial": piper_attention_backend._kv_mean_partial_kernel,
+            "kv-mean-finish": piper_attention_backend._kv_mean_finalize_kernel,
+            **quantization_kernels,
+            "attention": piper_attention_backend._piper_attention_sm89_d128_kernel,
+        }
     return {
         "kv-mean-partial": piper_attention_backend._kv_mean_partial_kernel,
         "kv-mean-finish": piper_attention_backend._kv_mean_finalize_kernel,
@@ -235,11 +260,26 @@ def _make_piper_attention_provider(
         config.is_causal,
         target=target,
     )
-    plan = replace(
-        plan,
-        native_uint8=native_uint8,
-        use_packed_probability_conversion=(native_uint8 and plan.use_packed_probability_conversion),
-    )
+    if native_uint8:
+        plan = replace(
+            plan,
+            native_uint8=True,
+        )
+    else:
+        plan = replace(
+            plan,
+            native_uint8=False,
+            split_pv_head_dim=False,
+            scaled_fp16_numerator=False,
+            loop_num_stages=None,
+            loop_licm=False,
+            use_packed_probability_conversion=False,
+            use_sm89_d128_specialization=False,
+            use_shared_value_scale=False,
+            use_fused_kv_preprocessing=False,
+            use_fp16_value_scale=False,
+            round_probability_codes=True,
+        )
 
     def prepare() -> object:
         return piper_attention_backend._prepare_piper_attention(
@@ -271,7 +311,7 @@ def _make_piper_attention_provider(
             "value_dtype": "int8",
             "value_scale": "per_key",
         },
-        triton_jit_functions=_piper_attention_jit_functions(target),
+        triton_jit_functions=_piper_attention_jit_functions(target, plan),
     )
 
 

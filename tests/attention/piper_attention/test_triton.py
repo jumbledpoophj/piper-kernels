@@ -32,6 +32,10 @@ def _sm120_available() -> bool:
     return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] == 12
 
 
+def _sm89_available() -> bool:
+    return torch.cuda.is_available() and torch.cuda.get_device_capability() == (8, 9)
+
+
 def _qk_quantization() -> Literal["per_thread", "per_warp"]:
     return "per_warp" if torch.cuda.get_device_capability()[0] == 12 else "per_thread"
 
@@ -179,6 +183,151 @@ def test_packed_probability_conversion_matches_stock_attention(
     assert torch.equal(packed, stock)
 
 
+@pytest.mark.skipif(not _sm89_available(), reason="specialization targets SM89")
+@pytest.mark.parametrize("use_shared_value_scale", [False, True])
+def test_sm89_fused_kv_preprocessing_matches_unfused(
+    use_shared_value_scale: bool,
+) -> None:
+    torch.manual_seed(64 + use_shared_value_scale)
+    query = torch.randn(1, 1, 8192, 128, device="cuda", dtype=torch.bfloat16)
+    key = torch.randn_like(query)
+    value = torch.randn_like(query)
+    production_plan = replace(
+        _default_piper_attention_execution_plan(query, key, False),
+        use_shared_value_scale=use_shared_value_scale,
+        use_fp16_value_scale=not use_shared_value_scale,
+    )
+
+    with torch.no_grad():
+        fused = _prepare_piper_attention(
+            query,
+            key,
+            value,
+            128**-0.5,
+            False,
+            execution_plan=production_plan,
+        )
+        unfused = _prepare_piper_attention(
+            query,
+            key,
+            value,
+            128**-0.5,
+            False,
+            execution_plan=replace(
+                production_plan,
+                use_fused_kv_preprocessing=False,
+            ),
+        )
+
+    for field in (
+        "query",
+        "query_scale",
+        "key",
+        "key_scale",
+        "value",
+        "value_scale_multiplier",
+        "value_log_scale",
+        "value_mean",
+    ):
+        assert torch.equal(getattr(fused, field), getattr(unfused, field)), field
+    assert fused.value_scale_multiplier.dtype is (
+        torch.float32 if use_shared_value_scale else torch.float16
+    )
+    assert torch.equal(
+        _launch_piper_attention(fused),
+        _launch_piper_attention(unfused),
+    )
+
+
+@pytest.mark.skipif(not _sm89_available(), reason="specialization targets SM89")
+@pytest.mark.parametrize("round_probability_codes", [False, True])
+def test_sm89_packed_probability_conversion_matches_stock(
+    round_probability_codes: bool,
+) -> None:
+    torch.manual_seed(66 + round_probability_codes)
+    query = torch.randn(1, 1, 8192, 128, device="cuda", dtype=torch.bfloat16)
+    key = torch.randn_like(query)
+    value = torch.randn_like(query)
+    plan = replace(
+        _default_piper_attention_execution_plan(query, key, False),
+        round_probability_codes=round_probability_codes,
+    )
+
+    with torch.no_grad():
+        stock = _run_piper_attention(
+            query,
+            key,
+            value,
+            128**-0.5,
+            False,
+            execution_plan=replace(
+                plan,
+                use_packed_probability_conversion=False,
+            ),
+        )
+        packed = _run_piper_attention(
+            query,
+            key,
+            value,
+            128**-0.5,
+            False,
+            execution_plan=plan,
+        )
+
+    assert torch.equal(packed, stock)
+
+
+def _sqnr_db(actual: torch.Tensor, reference: torch.Tensor) -> float:
+    error_energy = (actual.float() - reference.float()).square().sum()
+    signal_energy = reference.float().square().sum()
+    return float(10 * torch.log10(signal_energy / error_energy))
+
+
+@pytest.mark.skipif(not _sm89_available(), reason="specialization targets SM89")
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_sm89_production_specialization_clears_relative_quality_gate(seed: int) -> None:
+    torch.manual_seed(seed)
+    query = torch.randn(1, 1, 8192, 128, device="cuda", dtype=torch.bfloat16)
+    key = torch.randn_like(query)
+    value = torch.randn_like(query)
+    specialized_plan = _default_piper_attention_execution_plan(query, key, False)
+    generic_plan = replace(
+        specialized_plan,
+        use_sm89_d128_specialization=False,
+        use_shared_value_scale=False,
+        use_fused_kv_preprocessing=False,
+        use_fp16_value_scale=False,
+        split_pv_head_dim=False,
+        scaled_fp16_numerator=False,
+        loop_num_stages=None,
+        loop_licm=False,
+        use_packed_probability_conversion=False,
+        round_probability_codes=True,
+    )
+
+    with torch.no_grad():
+        specialized = _run_piper_attention(
+            query,
+            key,
+            value,
+            128**-0.5,
+            False,
+            execution_plan=specialized_plan,
+        )
+        generic = _run_piper_attention(
+            query,
+            key,
+            value,
+            128**-0.5,
+            False,
+            execution_plan=generic_plan,
+        )
+        reference = torch.nn.functional.scaled_dot_product_attention(query, key, value)
+
+    assert torch.isfinite(specialized).all()
+    assert _sqnr_db(specialized, reference) >= _sqnr_db(generic, reference) - 0.5
+
+
 @pytest.mark.parametrize("sequence", [193, 1024])
 def test_affine_fallback_matches_native_uint8(sequence: int) -> None:
     torch.manual_seed(55 + sequence)
@@ -280,6 +429,63 @@ def test_biased_value_quality() -> None:
 
     mse = (actual.float() - expected.float()).square().mean()
     assert mse < 1e-3
+
+
+@pytest.mark.skipif(not _sm89_available(), reason="specialization targets SM89")
+def test_sm89_specialization_clears_biased_value_quality_gate() -> None:
+    torch.manual_seed(69)
+    sequence = 8192
+    query = torch.randn(1, 1, sequence, 128, device="cuda", dtype=torch.bfloat16)
+    key = torch.randn_like(query)
+    offset = torch.linspace(-8, 8, 128, device="cuda").reshape(1, 1, 1, 128)
+    value = (offset + torch.randn_like(query.float()) * 0.25).to(torch.bfloat16)
+    specialized_plan = _default_piper_attention_execution_plan(query, key, False)
+    generic_plan = replace(
+        specialized_plan,
+        use_sm89_d128_specialization=False,
+        use_fused_kv_preprocessing=False,
+        use_fp16_value_scale=False,
+        split_pv_head_dim=False,
+        scaled_fp16_numerator=False,
+        loop_num_stages=None,
+        loop_licm=False,
+        use_packed_probability_conversion=False,
+    )
+
+    with torch.no_grad():
+        specialized = _run_piper_attention(
+            query,
+            key,
+            value,
+            128**-0.5,
+            False,
+            execution_plan=specialized_plan,
+        )
+        generic = _run_piper_attention(
+            query,
+            key,
+            value,
+            128**-0.5,
+            False,
+            execution_plan=generic_plan,
+        )
+        reference = torch.nn.functional.scaled_dot_product_attention(query, key, value)
+
+    assert _sqnr_db(specialized, reference) >= _sqnr_db(generic, reference) - 0.5
+
+
+@pytest.mark.skipif(not _sm89_available(), reason="specialization targets SM89")
+def test_sm89_specialization_restores_constant_value_exactly() -> None:
+    torch.manual_seed(70)
+    query = torch.randn(1, 1, 8192, 128, device="cuda", dtype=torch.bfloat16)
+    key = torch.randn_like(query)
+    value_row = torch.randn(1, 1, 1, 128, device="cuda", dtype=torch.bfloat16)
+    value = value_row.expand_as(query).contiguous()
+
+    with torch.no_grad():
+        actual = piper_attention(query, key, value)
+
+    torch.testing.assert_close(actual, value, atol=0.0, rtol=0.0)
 
 
 @pytest.mark.skipif(not _sm120_available(), reason="tensor descriptors target SM12x")

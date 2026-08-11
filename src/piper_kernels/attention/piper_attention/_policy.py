@@ -27,8 +27,13 @@ class PiperAttentionExecutionPlan:
     loop_num_stages: int | None = None
     loop_licm: bool = False
     use_packed_probability_conversion: bool = False
+    use_sm89_d128_specialization: bool = False
+    use_shared_value_scale: bool = False
+    use_fused_kv_preprocessing: bool = False
+    use_fp16_value_scale: bool = False
+    round_probability_codes: bool = True
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # noqa: PLR0912 - plan invariants stay explicit
         if self.block_m not in BLOCK_M_VALUES:
             raise ValueError("Piper Attention block_m must be 32, 64, or 128")
         if self.num_warps not in NUM_WARPS_VALUES:
@@ -41,6 +46,22 @@ class PiperAttentionExecutionPlan:
             raise ValueError("scaled FP16 numerator recurrence requires split PV")
         if self.use_packed_probability_conversion and not self.native_uint8:
             raise ValueError("packed probability conversion requires native UINT8 MMA")
+        if self.use_sm89_d128_specialization and not self.native_uint8:
+            raise ValueError("SM89 D128 specialization requires native UINT8 MMA")
+        if self.use_sm89_d128_specialization and not self.split_pv_head_dim:
+            raise ValueError("SM89 D128 specialization requires split PV")
+        if self.use_sm89_d128_specialization and self.use_tensor_descriptors:
+            raise ValueError("SM89 D128 specialization requires pointer loads")
+        if self.use_shared_value_scale and not self.use_sm89_d128_specialization:
+            raise ValueError("shared V scaling requires the SM89 D128 specialization")
+        if self.use_fused_kv_preprocessing and not self.use_sm89_d128_specialization:
+            raise ValueError("fused K/V preprocessing requires the SM89 D128 specialization")
+        if self.use_fp16_value_scale and not self.use_sm89_d128_specialization:
+            raise ValueError("FP16 V-scale storage requires the SM89 D128 specialization")
+        if self.use_fp16_value_scale and self.use_shared_value_scale:
+            raise ValueError("FP16 per-key V-scale storage is incompatible with shared V scaling")
+        if not self.round_probability_codes and not self.use_sm89_d128_specialization:
+            raise ValueError("probability truncation requires the SM89 D128 specialization")
 
     def as_dict(self) -> dict[str, object]:
         """Return execution choices as serializable benchmark metadata."""
@@ -59,23 +80,38 @@ def select_execution_plan(
     """Select established policy without borrowing schedules from other kernels."""
     grouped_qk = target.is_cuda_capability(12)
     native_uint8 = target.supports_uint8_int8_mma
-    split_pv_head_dim = (
+    use_sm89_d128_specialization = (
+        target.is_cuda_capability(8, 9)
+        and not is_causal
+        and head_dim == 128
+        and query_length == key_length
+        and query_length >= 8192
+        and query_length % 128 == 0
+        and key_length % 64 == 0
+    )
+    split_pv_head_dim = use_sm89_d128_specialization or (
         target.is_cuda_capability(12)
         and not is_causal
         and head_dim == 128
         and query_length >= 1024
         and key_length >= 1024
     )
-    scaled_fp16_numerator = split_pv_head_dim and key_length <= 131072
+    scaled_fp16_numerator = (
+        split_pv_head_dim
+        and key_length <= 131072
+        and not (use_sm89_d128_specialization and key_length >= 131072)
+    )
     # Paired SM120 measurements favor packed conversion for D64 and
     # non-causal D128, while the D128 causal specialization is neutral to
     # slightly slower and retains stock Triton lowering.
-    use_packed_probability_conversion = target.is_cuda_capability(12, 0) and not (
-        is_causal and head_dim == 128
+    use_packed_probability_conversion = use_sm89_d128_specialization or (
+        target.is_cuda_capability(12, 0) and not (is_causal and head_dim == 128)
     )
 
     block_m = (
-        64
+        128
+        if use_sm89_d128_specialization
+        else 64
         if is_causal
         else 128
         if scaled_fp16_numerator and query_length >= 8192 and key_length >= 8192
@@ -92,5 +128,15 @@ def select_execution_plan(
         scaled_fp16_numerator=scaled_fp16_numerator,
         use_tensor_descriptors=use_tensor_descriptors,
         num_stages=2 if use_tensor_descriptors else 3,
+        loop_num_stages=(3 if use_sm89_d128_specialization and key_length < 131072 else None),
+        loop_licm=use_sm89_d128_specialization and key_length < 131072,
         use_packed_probability_conversion=use_packed_probability_conversion,
+        use_sm89_d128_specialization=use_sm89_d128_specialization,
+        # Per-key V scaling and probability rounding are production quality
+        # gates. Shared-64-key scaling and truncation remain explicit offline
+        # ablation axes, but both lose more than 0.5 dB on the SM89 corpus.
+        use_shared_value_scale=False,
+        use_fused_kv_preprocessing=use_sm89_d128_specialization,
+        use_fp16_value_scale=use_sm89_d128_specialization,
+        round_probability_codes=True,
     )

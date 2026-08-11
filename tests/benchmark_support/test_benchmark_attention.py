@@ -36,6 +36,7 @@ from lib.attention_providers import (
 from piper_kernels._triton.targets import AcceleratorTarget
 
 _SM120 = AcceleratorTarget(backend="cuda", architecture="sm120")
+_SM89 = AcceleratorTarget(backend="cuda", architecture="sm89")
 
 
 def _canonical_distribution(
@@ -101,6 +102,24 @@ def test_provider_metadata_distinguishes_algorithms_and_controls() -> None:
     assert "quantize-query-per-warp" not in providers[SAGE_ATTENTION_2PP].triton_jit_functions
     assert providers[PYTORCH_SDPA].configuration["algorithm"] == ("scaled_dot_product_attention")
     assert not providers[PYTORCH_SDPA].triton_jit_functions
+
+
+def test_sm89_long_piper_provider_registers_only_specialized_kernels() -> None:
+    tensor = torch.empty((1, 8, 8192, 128), device="meta", dtype=torch.bfloat16)
+    provider = make_attention_providers(
+        (tensor, tensor, tensor),
+        provider_names=(PIPER_ATTENTION,),
+        config=AttentionConfig(dtype=torch.bfloat16),
+        target=_SM89,
+    )[PIPER_ATTENTION]
+
+    assert provider.configuration["use_sm89_d128_specialization"]
+    assert provider.configuration["use_fused_kv_preprocessing"]
+    assert provider.configuration["use_fp16_value_scale"]
+    assert "quantize-sm89-d128-key-value" in provider.triton_jit_functions
+    assert "quantize-key-per-thread" not in provider.triton_jit_functions
+    assert "quantize-value-per-key" not in provider.triton_jit_functions
+    assert "attention" in provider.triton_jit_functions
 
 
 def test_short_causal_sage_attention_2pp_provider_registers_query_quantization() -> None:
