@@ -239,12 +239,13 @@ def find_nvdisasm(explicit_path: Path | None = None) -> Path:
 def disassemble_cubin(cubin: bytes, nvdisasm: Path | None = None) -> str:
     """Disassemble one NVIDIA cubin with ``nvdisasm --print-code``."""
     executable = find_nvdisasm(nvdisasm)
-    with tempfile.NamedTemporaryFile(suffix=".cubin") as cubin_file:
+    with tempfile.NamedTemporaryFile(suffix=".cubin", delete=False) as cubin_file:
         cubin_file.write(cubin)
-        cubin_file.flush()
+        cubin_path = Path(cubin_file.name)
+    try:
         try:
             result = subprocess.run(
-                [str(executable), "--print-code", cubin_file.name],
+                [str(executable), "--print-code", str(cubin_path)],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -259,6 +260,8 @@ def disassemble_cubin(cubin: bytes, nvdisasm: Path | None = None) -> str:
             raise TritonInspectionError(
                 f"nvdisasm failed with {exit_description}: {diagnostic}"
             ) from error
+    finally:
+        cubin_path.unlink(missing_ok=True)
     return result.stdout
 
 

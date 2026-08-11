@@ -1,4 +1,5 @@
 import json
+import subprocess
 from enum import StrEnum
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from lib.triton_inspection import (
     TritonCompatibilityError,
     TritonInspectionError,
     compiled_artifact,
+    disassemble_cubin,
     discover_compiled_specializations,
     find_nvdisasm,
     inspect_provider,
@@ -281,6 +283,27 @@ def test_missing_nvdisasm_has_actionable_diagnostic(monkeypatch) -> None:
 
     with pytest.raises(NvdisasmUnavailableError, match="disable SASS inspection"):
         find_nvdisasm()
+
+
+def test_disassemble_closes_and_removes_temporary_cubin(monkeypatch) -> None:
+    observed_path: Path | None = None
+
+    monkeypatch.setattr(
+        "lib.triton_inspection.find_nvdisasm",
+        lambda _explicit_path: Path("nvdisasm"),
+    )
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal observed_path
+        observed_path = Path(command[-1])
+        assert observed_path.read_bytes() == b"compiled-cubin"
+        return subprocess.CompletedProcess(command, 0, stdout="disassembled", stderr="")
+
+    monkeypatch.setattr("lib.triton_inspection.subprocess.run", run)
+
+    assert disassemble_cubin(b"compiled-cubin") == "disassembled"
+    assert observed_path is not None
+    assert not observed_path.exists()
 
 
 def test_uncompiled_and_incompatible_kernels_fail_at_boundary() -> None:
