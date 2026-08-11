@@ -52,6 +52,8 @@ def test_tuner_defaults_to_production_plan() -> None:
     assert arguments.use_shared_value_scale is None
     assert arguments.use_fused_kv_preprocessing is None
     assert arguments.use_fp16_value_scale is None
+    assert arguments.derive_value_scale_multiplier is None
+    assert arguments.use_hybrid_fp32_fp16_numerator is None
     assert arguments.scaled_fp16_numerator is None
     assert arguments.round_probability_codes is None
 
@@ -124,6 +126,8 @@ def test_sm89_generic_ablation_resets_specialized_only_fields() -> None:
     assert not plan.use_shared_value_scale
     assert not plan.use_fused_kv_preprocessing
     assert not plan.use_fp16_value_scale
+    assert not plan.derive_value_scale_multiplier
+    assert not plan.use_hybrid_fp32_fp16_numerator
     assert plan.round_probability_codes
     assert plan.use_packed_probability_conversion
     assert plan.loop_num_stages is None
@@ -136,6 +140,16 @@ def test_sm89_generic_ablation_resets_specialized_only_fields() -> None:
         (["--use-shared-value-scale"], "use_shared_value_scale", True),
         (["--no-use-fused-kv-preprocessing"], "use_fused_kv_preprocessing", False),
         (["--no-use-fp16-value-scale"], "use_fp16_value_scale", False),
+        (
+            ["--no-derive-value-scale-multiplier"],
+            "derive_value_scale_multiplier",
+            False,
+        ),
+        (
+            ["--use-hybrid-fp32-fp16-numerator"],
+            "use_hybrid_fp32_fp16_numerator",
+            True,
+        ),
         (["--no-scaled-fp16-numerator"], "scaled_fp16_numerator", False),
         (["--no-round-probability-codes"], "round_probability_codes", False),
     ],

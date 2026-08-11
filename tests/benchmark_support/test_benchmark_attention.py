@@ -116,7 +116,9 @@ def test_sm89_long_piper_provider_registers_only_specialized_kernels() -> None:
     assert provider.configuration["use_sm89_d128_specialization"]
     assert provider.configuration["use_fused_kv_preprocessing"]
     assert provider.configuration["use_fp16_value_scale"]
-    assert "quantize-sm89-d128-key-value" in provider.triton_jit_functions
+    assert provider.configuration["derive_value_scale_multiplier"]
+    assert "quantize-sm89-d128-query-key-value" in provider.triton_jit_functions
+    assert "quantize-query-per-thread" not in provider.triton_jit_functions
     assert "quantize-key-per-thread" not in provider.triton_jit_functions
     assert "quantize-value-per-key" not in provider.triton_jit_functions
     assert "attention" in provider.triton_jit_functions

@@ -38,6 +38,8 @@ def test_generic_control_disables_every_specialized_axis() -> None:
     assert not plan.use_shared_value_scale
     assert not plan.use_fused_kv_preprocessing
     assert not plan.use_fp16_value_scale
+    assert not plan.derive_value_scale_multiplier
+    assert not plan.use_hybrid_fp32_fp16_numerator
     assert not plan.use_packed_probability_conversion
     assert plan.round_probability_codes
 
@@ -52,9 +54,10 @@ def test_ablation_matrix_separates_requested_variables() -> None:
         "dedicated-packed-per-key-fp32-acc-fp32-scale-unfused-round",
         "dedicated-packed-per-key-fp32-acc-fp16-scale-unfused-round",
         "dedicated-packed-per-key-split-fp16-fp16-scale-unfused-round",
+        "dedicated-packed-per-key-production-acc-fp16-scale-fused-loaded-round",
         "production",
-        "dedicated-packed-shared-v64-split-fp16-fp32-scale-fused-round",
-        "dedicated-packed-per-key-split-fp16-fp16-scale-fused-truncate",
+        "dedicated-packed-shared-v64-production-acc-fp32-scale-fused-round",
+        "dedicated-packed-per-key-production-acc-fp16-scale-fused-truncate",
     }
     assert not plans["generic-stock"].use_packed_probability_conversion
     assert plans["generic-packed"].use_packed_probability_conversion
@@ -69,9 +72,13 @@ def test_ablation_matrix_separates_requested_variables() -> None:
         "dedicated-packed-per-key-split-fp16-fp16-scale-unfused-round"
     ].scaled_fp16_numerator
     assert plans["production"].use_fused_kv_preprocessing
+    assert plans["production"].derive_value_scale_multiplier
+    assert not plans[
+        "dedicated-packed-per-key-production-acc-fp16-scale-fused-loaded-round"
+    ].derive_value_scale_multiplier
     assert plans[
-        "dedicated-packed-shared-v64-split-fp16-fp32-scale-fused-round"
+        "dedicated-packed-shared-v64-production-acc-fp32-scale-fused-round"
     ].use_shared_value_scale
     assert not plans[
-        "dedicated-packed-per-key-split-fp16-fp16-scale-fused-truncate"
+        "dedicated-packed-per-key-production-acc-fp16-scale-fused-truncate"
     ].round_probability_codes

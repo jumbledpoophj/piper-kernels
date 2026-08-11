@@ -103,9 +103,10 @@ with one signed-INT8 scale, folds those scales into nonnegative probabilities, a
 uses `UINT8 x INT8 -> INT32` tensor-core products. The probability multiplier remains
 FP32 on the generic path so every finite FP16 input scale is representable without a
 conversion in the hot loop. FP32 also remains the softmax and denominator coordinate.
-The quality-gated SM89/D128 long-context specialization stores the per-key multiplier in
-FP16, buffers the bounded PV numerator in FP16 at 8K and 32K, and retains FP32 numerator
-accumulation at 128K.
+The quality-gated SM89/D128 long-context specialization stores scale coordinates in FP16.
+At 8K and 32K it reconstructs the probability multiplier from the already-loaded coordinate
+and buffers both bounded PV numerator halves in FP16. At 128K it retains one FP32 half and one
+FP16 half, reducing register spills while staying within the relative quality gate.
 
 For centered V, Piper Attention uses the exact identity
 
@@ -132,7 +133,7 @@ operation through unsupported WGMMA and therefore uses the slow portable quantiz
 reference. Native ROCm mixed-sign lowering remains future work.
 
 Aligned non-causal SM89 self-attention with D128 and sequence length at least 8K uses a
-dedicated kernel and separate fused K/V preprocessing kernel. The fused preprocessing
+dedicated kernel and separate fused Q/K/V preprocessing kernel. The fused preprocessing
 reproduces the unfused quantized tensors and metadata exactly. Production retains per-key V
 scaling and probability rounding; shared-64-key V scaling and truncation remain offline
 ablation choices because they do not clear the relative quality gate. Causal attention and

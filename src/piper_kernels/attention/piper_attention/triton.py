@@ -40,6 +40,7 @@ _P_UINT8_LOG2_RANGE = tl.constexpr(7.994353436858858)
 _P_ZERO_POINT = tl.constexpr(128)
 _V_INT8_RANGE = tl.constexpr(127.0)
 _SCALE_EPSILON = tl.constexpr(1e-7)
+_LOG2_E = tl.constexpr(1.4426950408889634)
 
 
 @triton.jit
@@ -302,23 +303,33 @@ def _quantize_value_shared_kernel(
 
 
 @triton.jit
-def _quantize_sm89_d128_key_value_kernel(
+def _quantize_sm89_d128_query_key_value_kernel(
+    query_ptr,
     key_ptr,
     value_ptr,
     key_mean_ptr,
     value_mean_ptr,
+    query_output_ptr,
+    query_scale_ptr,
     key_output_ptr,
     key_scale_ptr,
     value_output_ptr,
     value_scale_multiplier_ptr,
     value_scale_coordinate_ptr,
     key_length,
+    softmax_scale,
+    stride_qb,
+    stride_qh,
+    stride_qn,
     stride_kb,
     stride_kh,
     stride_kn,
     stride_vb,
     stride_vh,
     stride_vn,
+    stride_qob,
+    stride_qoh,
+    stride_qon,
     stride_kob,
     stride_koh,
     stride_kon,
@@ -327,10 +338,11 @@ def _quantize_sm89_d128_key_value_kernel(
     stride_vod,
     stride_vok,
     use_shared_value_scale: tl.constexpr,
+    derive_value_scale_multiplier: tl.constexpr,
     heads: tl.constexpr,
     block_n: tl.constexpr,
 ):
-    """Fuse SM89 K/V preparation without changing generic quantized values."""
+    """Fuse SM89 Q/K/V preparation without changing generic quantized values."""
     head_dim: tl.constexpr = 128
     key_block = tl.program_id(0)
     head = tl.program_id(1)
@@ -339,6 +351,51 @@ def _quantize_sm89_d128_key_value_kernel(
     offsets_d = tl.arange(0, head_dim)
     valid = offsets_n < key_length
     batch_head = batch * heads + head
+
+    query = tl.load(
+        query_ptr
+        + batch * stride_qb
+        + head * stride_qh
+        + offsets_n[:, None] * stride_qn
+        + offsets_d[None, :],
+        mask=valid[:, None],
+        other=0.0,
+    ).to(tl.float32)
+    query_scale_group = (offsets_n % block_n) // 32 * 8 + offsets_n % 8
+    query_abs = tl.abs(query)
+    query_scale = tl.zeros((block_n,), dtype=tl.float32)
+    for group in tl.static_range(16):
+        group_maximum = tl.max(
+            tl.max(
+                tl.where(
+                    valid[:, None] & (query_scale_group[:, None] == group),
+                    query_abs,
+                    0.0,
+                ),
+                axis=1,
+            ),
+            axis=0,
+        )
+        query_scale = tl.where(
+            query_scale_group == group,
+            group_maximum / _V_INT8_RANGE + _SCALE_EPSILON,
+            query_scale,
+        )
+    query_quantized = qk_quantization.round_to_int8(query / query_scale[:, None])
+    tl.store(
+        query_output_ptr
+        + batch * stride_qob
+        + head * stride_qoh
+        + offsets_n[:, None] * stride_qon
+        + offsets_d[None, :],
+        query_quantized,
+        mask=valid[:, None],
+    )
+    tl.store(
+        query_scale_ptr + batch_head * key_length + offsets_n,
+        query_scale * (softmax_scale * _LOG2_E),
+        mask=valid,
+    )
 
     key = tl.load(
         key_ptr
@@ -428,11 +485,12 @@ def _quantize_sm89_d128_key_value_kernel(
         )
         value_quantized = qk_quantization.round_to_int8(value / shared_value_scale)
     else:
-        tl.store(
-            value_scale_multiplier_ptr + batch_head * key_length + offsets_n,
-            value_scale * _P_UINT8_RANGE,
-            mask=valid,
-        )
+        if not derive_value_scale_multiplier:
+            tl.store(
+                value_scale_multiplier_ptr + batch_head * key_length + offsets_n,
+                value_scale * _P_UINT8_RANGE,
+                mask=valid,
+            )
         tl.store(
             value_scale_coordinate_ptr + batch_head * key_length + offsets_n,
             tl.log2(value_scale),
@@ -524,6 +582,8 @@ def _piper_sm89_d128_tile(  # noqa: PLR0912, PLR0915
     key_length,
     use_shared_value_scale: tl.constexpr,
     scaled_fp16_numerator: tl.constexpr,
+    derive_value_scale_multiplier: tl.constexpr,
+    use_hybrid_fp32_fp16_numerator: tl.constexpr,
     round_probability_codes: tl.constexpr,
     use_packed_probability_conversion: tl.constexpr,
     block_n: tl.constexpr,
@@ -557,9 +617,12 @@ def _piper_sm89_d128_tile(  # noqa: PLR0912, PLR0915
     if use_shared_value_scale:
         probability_values = probabilities
     else:
-        value_scale_multiplier = tl.load(
-            value_scale_multiplier_ptr + batch_head * key_length + current_n
-        )
+        if derive_value_scale_multiplier:
+            value_scale_multiplier = tl.exp2(value_log_scale.to(tl.float32)) * _P_UINT8_RANGE
+        else:
+            value_scale_multiplier = tl.load(
+                value_scale_multiplier_ptr + batch_head * key_length + current_n
+            )
         probability_values = probabilities * value_scale_multiplier[None, :]
     if round_probability_codes:
         probability_values += 0.5
@@ -600,15 +663,26 @@ def _piper_sm89_d128_tile(  # noqa: PLR0912, PLR0915
         partial_low_update = (
             partial_low.to(tl.float32) * (1.0 / _P_UINT8_RANGE) * current_weight[:, None]
         )
-        partial_high_update = (
-            partial_high.to(tl.float32) * (1.0 / _P_UINT8_RANGE) * current_weight[:, None]
-        )
+        if use_hybrid_fp32_fp16_numerator:
+            partial_high_update = (partial_high.to(tl.float32) * (1.0 / 65536.0)).to(
+                tl.float16
+            ) * current_weight[:, None].to(tl.float16)
+        else:
+            partial_high_update = (
+                partial_high.to(tl.float32)
+                * (1.0 / _P_UINT8_RANGE)
+                * current_weight[:, None]
+            )
     if scaled_fp16_numerator:
         old_weight_update = old_weight[:, None].to(tl.float16)
     else:
         old_weight_update = old_weight[:, None]
     accumulator_low = accumulator_low * old_weight_update + partial_low_update
-    accumulator_high = accumulator_high * old_weight_update + partial_high_update
+    if scaled_fp16_numerator or use_hybrid_fp32_fp16_numerator:
+        high_old_weight_update = old_weight[:, None].to(tl.float16)
+    else:
+        high_old_weight_update = old_weight[:, None]
+    accumulator_high = accumulator_high * high_old_weight_update + partial_high_update
     return accumulator_low, accumulator_high, denominator, next_max
 
 
@@ -627,6 +701,8 @@ def _piper_attention_sm89_d128_kernel(
     key_length,
     use_shared_value_scale: tl.constexpr,
     scaled_fp16_numerator: tl.constexpr,
+    derive_value_scale_multiplier: tl.constexpr,
+    use_hybrid_fp32_fp16_numerator: tl.constexpr,
     round_probability_codes: tl.constexpr,
     use_packed_probability_conversion: tl.constexpr,
     loop_num_stages: tl.constexpr,
@@ -651,6 +727,9 @@ def _piper_attention_sm89_d128_kernel(
     query_scale = tl.load(query_scale_ptr + batch_head * query_length + offsets_m)
     if scaled_fp16_numerator:
         accumulator_low = tl.zeros((block_m, half_head_dim), dtype=tl.float16)
+        accumulator_high = tl.zeros((block_m, half_head_dim), dtype=tl.float16)
+    elif use_hybrid_fp32_fp16_numerator:
+        accumulator_low = tl.zeros((block_m, half_head_dim), dtype=tl.float32)
         accumulator_high = tl.zeros((block_m, half_head_dim), dtype=tl.float16)
     else:
         accumulator_low = tl.zeros((block_m, half_head_dim), dtype=tl.float32)
@@ -684,6 +763,8 @@ def _piper_attention_sm89_d128_kernel(
             key_length,
             use_shared_value_scale=use_shared_value_scale,
             scaled_fp16_numerator=scaled_fp16_numerator,
+            derive_value_scale_multiplier=derive_value_scale_multiplier,
+            use_hybrid_fp32_fp16_numerator=use_hybrid_fp32_fp16_numerator,
             round_probability_codes=round_probability_codes,
             use_packed_probability_conversion=use_packed_probability_conversion,
             block_n=block_n,
@@ -696,6 +777,11 @@ def _piper_attention_sm89_d128_kernel(
         )
         output_low = accumulator_low.to(tl.float32) / (denominator_safe * denominator_code_scale)
         output_high = accumulator_high.to(tl.float32) / (denominator_safe * denominator_code_scale)
+    elif use_hybrid_fp32_fp16_numerator:
+        output_low = accumulator_low / denominator_safe
+        output_high = accumulator_high.to(tl.float32) / (
+            denominator_safe * (_P_UINT8_RANGE / 65536.0)
+        )
     else:
         output_low = accumulator_low / denominator_safe
         output_high = accumulator_high / denominator_safe
@@ -1221,11 +1307,15 @@ def _prepare_piper_attention(
         value,
         is_causal=is_causal,
     )
-    query_int8, query_scale = qk_quantization.prepare_query(
-        query,
-        scale,
-        grouped=plan.grouped_qk,
-    )
+    if plan.use_fused_kv_preprocessing:
+        query_int8 = torch.empty_like(query, dtype=torch.int8)
+        query_scale = torch.empty(query.shape[:3], device=query.device, dtype=torch.float32)
+    else:
+        query_int8, query_scale = qk_quantization.prepare_query(
+            query,
+            scale,
+            grouped=plan.grouped_qk,
+        )
     key_shape = (batch, heads, storage_key_length, head_dim)
     if plan.use_fused_kv_preprocessing:
         key_int8 = torch.empty(key_shape, device=key.device, dtype=torch.int8)
@@ -1246,7 +1336,7 @@ def _prepare_piper_attention(
     )
     value_scale_multiplier = (
         key_scale
-        if plan.use_shared_value_scale
+        if plan.use_shared_value_scale or plan.derive_value_scale_multiplier
         else torch.empty(
             (batch, heads, key_length),
             device=value.device,
@@ -1273,23 +1363,33 @@ def _prepare_piper_attention(
     )
     value_grid = (triton.cdiv(key_length, _BLOCK_N), heads, batch)
     if plan.use_fused_kv_preprocessing:
-        _quantize_sm89_d128_key_value_kernel[value_grid](
+        _quantize_sm89_d128_query_key_value_kernel[value_grid](
+            query,
             key,
             value,
             key_mean,
             value_mean,
+            query_int8,
+            query_scale,
             key_int8,
             key_scale,
             value_int8,
             value_scale_multiplier,
             value_log_scale,
             key_length,
+            scale,
+            query.stride(0),
+            query.stride(1),
+            query.stride(2),
             key.stride(0),
             key.stride(1),
             key.stride(2),
             value.stride(0),
             value.stride(1),
             value.stride(2),
+            query_int8.stride(0),
+            query_int8.stride(1),
+            query_int8.stride(2),
             key_int8.stride(0),
             key_int8.stride(1),
             key_int8.stride(2),
@@ -1298,6 +1398,7 @@ def _prepare_piper_attention(
             value_int8.stride(2),
             value_int8.stride(3),
             use_shared_value_scale=plan.use_shared_value_scale,
+            derive_value_scale_multiplier=plan.derive_value_scale_multiplier,
             heads=heads,
             block_n=_BLOCK_N,
             num_warps=4,
@@ -1401,6 +1502,8 @@ def _launch_piper_attention(prepared: _PreparedPiperAttention) -> torch.Tensor:
             prepared.key_length,
             use_shared_value_scale=plan.use_shared_value_scale,
             scaled_fp16_numerator=plan.scaled_fp16_numerator,
+            derive_value_scale_multiplier=plan.derive_value_scale_multiplier,
+            use_hybrid_fp32_fp16_numerator=plan.use_hybrid_fp32_fp16_numerator,
             round_probability_codes=plan.round_probability_codes,
             use_packed_probability_conversion=plan.use_packed_probability_conversion,
             loop_num_stages=plan.loop_num_stages,

@@ -79,7 +79,7 @@ def test_execution_plan_preserves_existing_architecture_policy(
     assert plan.scaled_fp16_numerator is split_pv
     assert plan.use_tensor_descriptors is descriptors
     assert plan.use_packed_probability_conversion is packed_probability
-    assert plan.num_stages == (2 if descriptors else 3)
+    assert plan.num_stages == (1 if target is _SM89 else 2 if descriptors else 3)
 
 
 @pytest.mark.parametrize(
@@ -146,8 +146,11 @@ def test_sm89_specialization_is_exactly_scoped(
         assert not plan.use_shared_value_scale
         assert plan.use_fused_kv_preprocessing
         assert plan.use_fp16_value_scale
+        assert plan.derive_value_scale_multiplier is (key_length < 131072)
+        assert plan.use_hybrid_fp32_fp16_numerator is (key_length >= 131072)
         assert plan.round_probability_codes
-        assert plan.loop_num_stages == (3 if key_length < 131072 else None)
+        assert plan.num_stages == 1
+        assert plan.loop_num_stages == 3
         assert plan.loop_licm is (key_length < 131072)
 
 
@@ -190,6 +193,8 @@ def test_execution_plan_serializes_all_launch_choices() -> None:
         "use_shared_value_scale": False,
         "use_fused_kv_preprocessing": False,
         "use_fp16_value_scale": False,
+        "derive_value_scale_multiplier": False,
+        "use_hybrid_fp32_fp16_numerator": False,
         "round_probability_codes": True,
     }
 
@@ -225,6 +230,8 @@ def test_execution_plan_rejects_reverse_order_for_noncausal_invocation() -> None
         {"use_shared_value_scale": True},
         {"use_fused_kv_preprocessing": True},
         {"use_fp16_value_scale": True},
+        {"derive_value_scale_multiplier": True},
+        {"use_hybrid_fp32_fp16_numerator": True},
         {"round_probability_codes": False},
     ],
 )

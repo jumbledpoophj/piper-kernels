@@ -31,6 +31,8 @@ class PiperAttentionExecutionPlan:
     use_shared_value_scale: bool = False
     use_fused_kv_preprocessing: bool = False
     use_fp16_value_scale: bool = False
+    derive_value_scale_multiplier: bool = False
+    use_hybrid_fp32_fp16_numerator: bool = False
     round_probability_codes: bool = True
 
     def __post_init__(self) -> None:  # noqa: PLR0912 - plan invariants stay explicit
@@ -55,11 +57,25 @@ class PiperAttentionExecutionPlan:
         if self.use_shared_value_scale and not self.use_sm89_d128_specialization:
             raise ValueError("shared V scaling requires the SM89 D128 specialization")
         if self.use_fused_kv_preprocessing and not self.use_sm89_d128_specialization:
-            raise ValueError("fused K/V preprocessing requires the SM89 D128 specialization")
+            raise ValueError("fused Q/K/V preprocessing requires the SM89 D128 specialization")
         if self.use_fp16_value_scale and not self.use_sm89_d128_specialization:
             raise ValueError("FP16 V-scale storage requires the SM89 D128 specialization")
         if self.use_fp16_value_scale and self.use_shared_value_scale:
             raise ValueError("FP16 per-key V-scale storage is incompatible with shared V scaling")
+        if self.derive_value_scale_multiplier and not self.use_sm89_d128_specialization:
+            raise ValueError("derived V-scale reconstruction requires the SM89 D128 specialization")
+        if self.derive_value_scale_multiplier and not self.use_fused_kv_preprocessing:
+            raise ValueError("derived V-scale reconstruction requires fused Q/K/V preprocessing")
+        if self.derive_value_scale_multiplier and not self.use_fp16_value_scale:
+            raise ValueError("derived V-scale reconstruction requires FP16 V-scale storage")
+        if self.derive_value_scale_multiplier and self.use_shared_value_scale:
+            raise ValueError("derived V-scale reconstruction requires per-key V scaling")
+        if self.use_hybrid_fp32_fp16_numerator and not self.use_sm89_d128_specialization:
+            raise ValueError("hybrid numerator accumulation requires the SM89 D128 specialization")
+        if self.use_hybrid_fp32_fp16_numerator and self.scaled_fp16_numerator:
+            raise ValueError("hybrid numerator accumulation requires the FP32 recurrence path")
+        if self.use_hybrid_fp32_fp16_numerator and self.use_shared_value_scale:
+            raise ValueError("hybrid numerator accumulation requires per-key V scaling")
         if not self.round_probability_codes and not self.use_sm89_d128_specialization:
             raise ValueError("probability truncation requires the SM89 D128 specialization")
 
@@ -127,8 +143,14 @@ def select_execution_plan(
         split_pv_head_dim=split_pv_head_dim,
         scaled_fp16_numerator=scaled_fp16_numerator,
         use_tensor_descriptors=use_tensor_descriptors,
-        num_stages=2 if use_tensor_descriptors else 3,
-        loop_num_stages=(3 if use_sm89_d128_specialization and key_length < 131072 else None),
+        num_stages=(
+            1
+            if use_sm89_d128_specialization
+            else 2
+            if use_tensor_descriptors
+            else 3
+        ),
+        loop_num_stages=(3 if use_sm89_d128_specialization else None),
         loop_licm=use_sm89_d128_specialization and key_length < 131072,
         use_packed_probability_conversion=use_packed_probability_conversion,
         use_sm89_d128_specialization=use_sm89_d128_specialization,
@@ -138,5 +160,11 @@ def select_execution_plan(
         use_shared_value_scale=False,
         use_fused_kv_preprocessing=use_sm89_d128_specialization,
         use_fp16_value_scale=use_sm89_d128_specialization,
+        derive_value_scale_multiplier=(
+            use_sm89_d128_specialization and key_length < 131072
+        ),
+        use_hybrid_fp32_fp16_numerator=(
+            use_sm89_d128_specialization and key_length >= 131072
+        ),
         round_probability_codes=True,
     )

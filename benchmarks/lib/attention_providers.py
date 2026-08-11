@@ -213,14 +213,16 @@ def _piper_attention_jit_functions(
 ) -> dict[str, object]:
     qk_kernels = _qk_jit_functions(target)
     if plan.use_sm89_d128_specialization:
-        quantization_kernels = {
-            "quantize-query-per-thread": qk_kernels["quantize-query-per-thread"],
-        }
         if plan.use_fused_kv_preprocessing:
-            quantization_kernels["quantize-sm89-d128-key-value"] = (
-                piper_attention_backend._quantize_sm89_d128_key_value_kernel
-            )
+            quantization_kernels = {
+                "quantize-sm89-d128-query-key-value": (
+                    piper_attention_backend._quantize_sm89_d128_query_key_value_kernel
+                )
+            }
         else:
+            quantization_kernels = {
+                "quantize-query-per-thread": qk_kernels["quantize-query-per-thread"],
+            }
             quantization_kernels["quantize-key-per-thread"] = qk_kernels["quantize-key-per-thread"]
             quantization_kernels[
                 "quantize-value-shared" if plan.use_shared_value_scale else "quantize-value-per-key"
@@ -278,6 +280,8 @@ def _make_piper_attention_provider(
             use_shared_value_scale=False,
             use_fused_kv_preprocessing=False,
             use_fp16_value_scale=False,
+            derive_value_scale_multiplier=False,
+            use_hybrid_fp32_fp16_numerator=False,
             round_probability_codes=True,
         )
 

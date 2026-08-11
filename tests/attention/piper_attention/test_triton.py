@@ -196,6 +196,7 @@ def test_sm89_fused_kv_preprocessing_matches_unfused(
         _default_piper_attention_execution_plan(query, key, False),
         use_shared_value_scale=use_shared_value_scale,
         use_fp16_value_scale=not use_shared_value_scale,
+        derive_value_scale_multiplier=False,
     )
 
     with torch.no_grad():
@@ -284,10 +285,16 @@ def _sqnr_db(actual: torch.Tensor, reference: torch.Tensor) -> float:
 
 
 @pytest.mark.skipif(not _sm89_available(), reason="specialization targets SM89")
-@pytest.mark.parametrize("seed", [0, 1, 2])
-def test_sm89_production_specialization_clears_relative_quality_gate(seed: int) -> None:
+@pytest.mark.parametrize(
+    ("sequence", "seed"),
+    [(8192, 0), (8192, 1), (8192, 2), (131072, 0)],
+)
+def test_sm89_production_specialization_clears_relative_quality_gate(
+    sequence: int,
+    seed: int,
+) -> None:
     torch.manual_seed(seed)
-    query = torch.randn(1, 1, 8192, 128, device="cuda", dtype=torch.bfloat16)
+    query = torch.randn(1, 1, sequence, 128, device="cuda", dtype=torch.bfloat16)
     key = torch.randn_like(query)
     value = torch.randn_like(query)
     specialized_plan = _default_piper_attention_execution_plan(query, key, False)
@@ -297,6 +304,8 @@ def test_sm89_production_specialization_clears_relative_quality_gate(seed: int) 
         use_shared_value_scale=False,
         use_fused_kv_preprocessing=False,
         use_fp16_value_scale=False,
+        derive_value_scale_multiplier=False,
+        use_hybrid_fp32_fp16_numerator=False,
         split_pv_head_dim=False,
         scaled_fp16_numerator=False,
         loop_num_stages=None,
@@ -445,6 +454,8 @@ def test_sm89_specialization_clears_biased_value_quality_gate() -> None:
         use_sm89_d128_specialization=False,
         use_fused_kv_preprocessing=False,
         use_fp16_value_scale=False,
+        derive_value_scale_multiplier=False,
+        use_hybrid_fp32_fp16_numerator=False,
         split_pv_head_dim=False,
         scaled_fp16_numerator=False,
         loop_num_stages=None,

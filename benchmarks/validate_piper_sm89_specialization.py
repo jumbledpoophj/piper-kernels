@@ -87,6 +87,8 @@ def _generic_plan(
         use_shared_value_scale=False,
         use_fused_kv_preprocessing=False,
         use_fp16_value_scale=False,
+        derive_value_scale_multiplier=False,
+        use_hybrid_fp32_fp16_numerator=False,
         split_pv_head_dim=False,
         scaled_fp16_numerator=False,
         loop_num_stages=None,
@@ -111,6 +113,8 @@ def _ablation_plans(
                 scaled_fp16_numerator=False,
                 use_fused_kv_preprocessing=False,
                 use_fp16_value_scale=False,
+                derive_value_scale_multiplier=False,
+                use_hybrid_fp32_fp16_numerator=False,
             ),
         ),
         (
@@ -120,6 +124,8 @@ def _ablation_plans(
                 scaled_fp16_numerator=False,
                 use_fused_kv_preprocessing=False,
                 use_fp16_value_scale=False,
+                derive_value_scale_multiplier=False,
+                use_hybrid_fp32_fp16_numerator=False,
             ),
         ),
         (
@@ -128,23 +134,37 @@ def _ablation_plans(
                 production_plan,
                 scaled_fp16_numerator=False,
                 use_fused_kv_preprocessing=False,
+                derive_value_scale_multiplier=False,
+                use_hybrid_fp32_fp16_numerator=False,
             ),
         ),
         (
             "dedicated-packed-per-key-split-fp16-fp16-scale-unfused-round",
-            replace(production_plan, use_fused_kv_preprocessing=False),
+            replace(
+                production_plan,
+                scaled_fp16_numerator=True,
+                use_fused_kv_preprocessing=False,
+                derive_value_scale_multiplier=False,
+                use_hybrid_fp32_fp16_numerator=False,
+            ),
+        ),
+        (
+            "dedicated-packed-per-key-production-acc-fp16-scale-fused-loaded-round",
+            replace(production_plan, derive_value_scale_multiplier=False),
         ),
         ("production", production_plan),
         (
-            "dedicated-packed-shared-v64-split-fp16-fp32-scale-fused-round",
+            "dedicated-packed-shared-v64-production-acc-fp32-scale-fused-round",
             replace(
                 production_plan,
                 use_shared_value_scale=True,
                 use_fp16_value_scale=False,
+                derive_value_scale_multiplier=False,
+                use_hybrid_fp32_fp16_numerator=False,
             ),
         ),
         (
-            "dedicated-packed-per-key-split-fp16-fp16-scale-fused-truncate",
+            "dedicated-packed-per-key-production-acc-fp16-scale-fused-truncate",
             replace(production_plan, round_probability_codes=False),
         ),
     )

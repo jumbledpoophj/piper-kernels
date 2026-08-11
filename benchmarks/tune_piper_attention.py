@@ -68,6 +68,16 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
     )
     parser.add_argument(
+        "--derive-value-scale-multiplier",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--use-hybrid-fp32-fp16-numerator",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
         "--scaled-fp16-numerator",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -120,6 +130,14 @@ def _candidate_plans(  # noqa: PLR0912 - normalizes dependent plan axes
             production_plan.use_fp16_value_scale,
         ),
         boolean_tuning_axis(
+            args.derive_value_scale_multiplier,
+            production_plan.derive_value_scale_multiplier,
+        ),
+        boolean_tuning_axis(
+            args.use_hybrid_fp32_fp16_numerator,
+            production_plan.use_hybrid_fp32_fp16_numerator,
+        ),
+        boolean_tuning_axis(
             args.scaled_fp16_numerator,
             production_plan.scaled_fp16_numerator,
         ),
@@ -142,18 +160,32 @@ def _candidate_plans(  # noqa: PLR0912 - normalizes dependent plan axes
         use_shared_value_scale,
         use_fused_kv_preprocessing,
         use_fp16_value_scale,
+        derive_value_scale_multiplier,
+        use_hybrid_fp32_fp16_numerator,
         scaled_fp16_numerator,
         round_probability_codes,
     ) in product(*axes):
         candidate_shared_value_scale = use_shared_value_scale
         candidate_fused_kv_preprocessing = use_fused_kv_preprocessing
         candidate_fp16_value_scale = use_fp16_value_scale
+        candidate_derive_value_scale_multiplier = derive_value_scale_multiplier
+        candidate_hybrid_numerator = use_hybrid_fp32_fp16_numerator
         candidate_scaled_fp16_numerator = scaled_fp16_numerator
         candidate_round_probability_codes = round_probability_codes
         candidate_loop_num_stages = loop_num_stages
         candidate_loop_licm = loop_licm
         if candidate_shared_value_scale and args.use_fp16_value_scale is None:
             candidate_fp16_value_scale = False
+        if (
+            candidate_shared_value_scale
+            or not candidate_fused_kv_preprocessing
+            or not candidate_fp16_value_scale
+        ) and args.derive_value_scale_multiplier is None:
+            candidate_derive_value_scale_multiplier = False
+        if candidate_hybrid_numerator and args.scaled_fp16_numerator is None:
+            candidate_scaled_fp16_numerator = False
+        if candidate_scaled_fp16_numerator and args.use_hybrid_fp32_fp16_numerator is None:
+            candidate_hybrid_numerator = False
         if not use_sm89_d128_specialization and production_plan.use_sm89_d128_specialization:
             if args.use_shared_value_scale is None:
                 candidate_shared_value_scale = False
@@ -161,6 +193,10 @@ def _candidate_plans(  # noqa: PLR0912 - normalizes dependent plan axes
                 candidate_fused_kv_preprocessing = False
             if args.use_fp16_value_scale is None:
                 candidate_fp16_value_scale = False
+            if args.derive_value_scale_multiplier is None:
+                candidate_derive_value_scale_multiplier = False
+            if args.use_hybrid_fp32_fp16_numerator is None:
+                candidate_hybrid_numerator = False
             if args.scaled_fp16_numerator is None:
                 candidate_scaled_fp16_numerator = False
             if args.round_probability_codes is None:
@@ -176,6 +212,8 @@ def _candidate_plans(  # noqa: PLR0912 - normalizes dependent plan axes
                 candidate_shared_value_scale
                 or candidate_fused_kv_preprocessing
                 or candidate_fp16_value_scale
+                or candidate_derive_value_scale_multiplier
+                or candidate_hybrid_numerator
                 or candidate_scaled_fp16_numerator
                 or not candidate_round_probability_codes
             )
@@ -196,6 +234,8 @@ def _candidate_plans(  # noqa: PLR0912 - normalizes dependent plan axes
                 use_shared_value_scale=candidate_shared_value_scale,
                 use_fused_kv_preprocessing=candidate_fused_kv_preprocessing,
                 use_fp16_value_scale=candidate_fp16_value_scale,
+                derive_value_scale_multiplier=candidate_derive_value_scale_multiplier,
+                use_hybrid_fp32_fp16_numerator=candidate_hybrid_numerator,
                 split_pv_head_dim=(
                     use_sm89_d128_specialization
                     if production_plan.use_sm89_d128_specialization
@@ -228,13 +268,17 @@ def _plan_name(plan: piper_attention_policy.PiperAttentionExecutionPlan) -> str:
     kernel = "sm89-d128" if plan.use_sm89_d128_specialization else "generic"
     value_scale = "shared-v64" if plan.use_shared_value_scale else "per-key-v"
     accumulator = "split-fp16" if plan.scaled_fp16_numerator else "fp32"
-    preprocessing = "fused-kv" if plan.use_fused_kv_preprocessing else "stock-prep"
+    preprocessing = "fused-qkv" if plan.use_fused_kv_preprocessing else "stock-prep"
     value_scale_storage = "fp16-vscale" if plan.use_fp16_value_scale else "fp32-vscale"
+    value_scale_load = (
+        "derived-vscale" if plan.derive_value_scale_multiplier else "loaded-vscale"
+    )
+    numerator = "hybrid-acc" if plan.use_hybrid_fp32_fp16_numerator else accumulator
     probability_rounding = "round-p" if plan.round_probability_codes else "truncate-p"
     return (
         f"{kernel}-{load_path}-m{plan.block_m}-w{plan.num_warps}-s{plan.num_stages}-"
         f"{block_order}-loop{loop_stages}-{licm}-{probability_conversion}-"
-        f"{value_scale}-{value_scale_storage}-{accumulator}-{preprocessing}-"
+        f"{value_scale}-{value_scale_storage}-{value_scale_load}-{numerator}-{preprocessing}-"
         f"{probability_rounding}"
     )
 
