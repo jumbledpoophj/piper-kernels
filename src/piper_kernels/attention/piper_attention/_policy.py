@@ -99,14 +99,15 @@ def select_execution_plan(
     """Select established policy without borrowing schedules from other kernels."""
     grouped_qk = target.is_cuda_capability(12)
     native_uint8 = target.supports_uint8_int8_mma
-    use_sm89_d128_specialization = (
+    aligned_sm89_d128 = (
         target.is_cuda_capability(8, 9)
-        and not is_causal
         and head_dim == 128
         and query_length == key_length
-        and query_length >= 8192
         and query_length % 128 == 0
         and key_length % 64 == 0
+    )
+    use_sm89_d128_specialization = aligned_sm89_d128 and (
+        (not is_causal and query_length >= 8192) or (is_causal and query_length == 131072)
     )
     split_pv_head_dim = use_sm89_d128_specialization or (
         target.is_cuda_capability(12)
@@ -147,8 +148,11 @@ def select_execution_plan(
         scaled_fp16_numerator=scaled_fp16_numerator,
         use_tensor_descriptors=use_tensor_descriptors,
         num_stages=(1 if use_sm89_d128_specialization else 2 if use_tensor_descriptors else 3),
+        reverse_causal_blocks=is_causal and use_sm89_d128_specialization,
         loop_num_stages=(
-            2
+            3
+            if use_sm89_d128_specialization and is_causal
+            else 2
             if use_sm89_d128_specialization and key_length >= 131072
             else 3
             if use_sm89_d128_specialization

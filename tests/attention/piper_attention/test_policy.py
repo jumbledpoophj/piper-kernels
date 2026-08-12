@@ -120,6 +120,8 @@ def test_sm89_does_not_inherit_sage_attention_schedule() -> None:
         (8192, 8192, 64, False, False),
         (8192, 16384, 128, False, False),
         (8192, 8192, 128, True, False),
+        (131072, 131072, 128, True, True),
+        (262144, 262144, 128, True, False),
     ],
 )
 def test_sm89_specialization_is_exactly_scoped(
@@ -143,6 +145,7 @@ def test_sm89_specialization_is_exactly_scoped(
         assert plan.split_pv_head_dim
         assert plan.scaled_fp16_numerator is (key_length < 131072)
         assert plan.use_packed_probability_conversion
+        assert plan.reverse_causal_blocks is is_causal
         assert not plan.use_shared_value_scale
         assert plan.use_fused_kv_preprocessing
         assert plan.use_fp16_value_scale is (key_length < 131072)
@@ -151,7 +154,7 @@ def test_sm89_specialization_is_exactly_scoped(
         assert not plan.use_strided_kv_mean_sample
         assert plan.round_probability_codes
         assert plan.num_stages == 1
-        assert plan.loop_num_stages == (2 if key_length >= 131072 else 3)
+        assert plan.loop_num_stages == (3 if is_causal or key_length < 131072 else 2)
         assert plan.loop_licm is (key_length < 131072)
 
 

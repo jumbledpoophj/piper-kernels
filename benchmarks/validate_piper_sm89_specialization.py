@@ -50,6 +50,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sequences", type=int, nargs="+", default=_DEFAULT_SEQUENCES)
     parser.add_argument("--seeds", type=int, nargs="+", default=_DEFAULT_SEEDS)
     parser.add_argument("--heads", type=int, default=8)
+    parser.add_argument("--causal", action="store_true")
     parser.add_argument("--ablation-sequence", type=int, default=8192)
     parser.add_argument("--skip-ablations", action="store_true")
     parser.add_argument("--skip-regressions", action="store_true")
@@ -200,6 +201,8 @@ def _saturation_fractions(
 def _run_plan(
     inputs: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     plan: _policy.PiperAttentionExecutionPlan,
+    *,
+    is_causal: bool,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     query, key, value = inputs
     prepared = piper_backend._prepare_piper_attention(
@@ -207,7 +210,7 @@ def _run_plan(
         key,
         value,
         128**-0.5,
-        False,
+        is_causal,
         execution_plan=plan,
     )
     output = piper_backend._launch_piper_attention(prepared)
@@ -221,6 +224,7 @@ def _timing_record(
     candidate: str,
     plan: _policy.PiperAttentionExecutionPlan,
     sequence: int,
+    is_causal: bool,
     warmup_ms: int,
     measurement_time_ms: int,
 ) -> dict[str, Any]:
@@ -230,7 +234,7 @@ def _timing_record(
         key,
         value,
         128**-0.5,
-        False,
+        is_causal,
         execution_plan=plan,
     )
     piper_backend._launch_piper_attention(prepared)
@@ -246,7 +250,7 @@ def _timing_record(
             key,
             value,
             128**-0.5,
-            False,
+            is_causal,
             execution_plan=plan,
         ),
         warmup_ms,
@@ -324,10 +328,16 @@ def _make_inputs(
     seed: int,
     heads: int,
     *,
+    is_causal: bool = False,
     value_pattern: str = "random",
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     shape = AttentionShape(1, heads, sequence, sequence, 128)
-    config = AttentionConfig(dtype=torch.bfloat16, scale=128**-0.5, seed=seed)
+    config = AttentionConfig(
+        dtype=torch.bfloat16,
+        is_causal=is_causal,
+        scale=128**-0.5,
+        seed=seed,
+    )
     query, key, value = make_attention_inputs(shape, config=config, device=torch.device("cuda"))
     if value_pattern == "biased":
         offset = torch.linspace(-8, 8, 128, device="cuda").reshape(1, 1, 1, 128)
@@ -344,16 +354,26 @@ def _evaluate_inputs(
     seed: int,
     kind: str,
     include_ablations: bool,
+    is_causal: bool,
 ) -> list[dict[str, Any]]:
     query, key, _value = inputs
-    production_plan = piper_backend._default_piper_attention_execution_plan(query, key, False)
+    production_plan = piper_backend._default_piper_attention_execution_plan(query, key, is_causal)
     if not production_plan.use_sm89_d128_specialization:
         raise RuntimeError("workload did not select the SM89 D128 specialization")
     generic_plan = _generic_plan(production_plan, packed_probability=False)
-    generic_output, generic_saturation = _run_plan(inputs, generic_plan)
+    generic_output, generic_saturation = _run_plan(
+        inputs,
+        generic_plan,
+        is_causal=is_causal,
+    )
     reference = run_sdpa(
         inputs,
-        AttentionConfig(dtype=query.dtype, scale=128**-0.5, seed=seed),
+        AttentionConfig(
+            dtype=query.dtype,
+            is_causal=is_causal,
+            scale=128**-0.5,
+            seed=seed,
+        ),
     )
     candidates = (
         _ablation_plans(production_plan)
@@ -366,7 +386,7 @@ def _evaluate_inputs(
             output = generic_output
             saturation = generic_saturation
         else:
-            output, saturation = _run_plan(inputs, plan)
+            output, saturation = _run_plan(inputs, plan, is_causal=is_causal)
         records.append(
             _quality_record(
                 kind=kind,
@@ -410,7 +430,12 @@ def _main(argv: Sequence[str] | None = None) -> None:
     timing_records: list[dict[str, Any]] = []
     for sequence in dict.fromkeys(arguments.sequences):
         for seed in dict.fromkeys(arguments.seeds):
-            inputs = _make_inputs(sequence, seed, arguments.heads)
+            inputs = _make_inputs(
+                sequence,
+                seed,
+                arguments.heads,
+                is_causal=arguments.causal,
+            )
             records.extend(
                 _evaluate_inputs(
                     inputs,
@@ -420,13 +445,14 @@ def _main(argv: Sequence[str] | None = None) -> None:
                     include_ablations=(
                         not arguments.skip_ablations and sequence == arguments.ablation_sequence
                     ),
+                    is_causal=arguments.causal,
                 )
             )
             if seed == arguments.seeds[0] and not arguments.skip_timing:
                 production_plan = piper_backend._default_piper_attention_execution_plan(
                     inputs[0],
                     inputs[1],
-                    False,
+                    arguments.causal,
                 )
                 timing_candidates = (
                     _ablation_plans(production_plan)
@@ -445,6 +471,7 @@ def _main(argv: Sequence[str] | None = None) -> None:
                         candidate=name,
                         plan=plan,
                         sequence=sequence,
+                        is_causal=arguments.causal,
                         warmup_ms=arguments.warmup_ms,
                         measurement_time_ms=arguments.measurement_time_ms,
                     )
@@ -461,6 +488,7 @@ def _main(argv: Sequence[str] | None = None) -> None:
                 regression_sequence,
                 regression_seed,
                 arguments.heads,
+                is_causal=arguments.causal,
                 value_pattern=value_pattern,
             )
             records.extend(
@@ -470,6 +498,7 @@ def _main(argv: Sequence[str] | None = None) -> None:
                     seed=regression_seed,
                     kind=f"{value_pattern}-value",
                     include_ablations=False,
+                    is_causal=arguments.causal,
                 )
             )
             del inputs
@@ -484,12 +513,14 @@ def _main(argv: Sequence[str] | None = None) -> None:
                 seed=-1,
                 kind="real-model-capture",
                 include_ablations=False,
+                is_causal=arguments.causal,
             )
         )
 
     payload = {
         "schema_version": 1,
         "validation": "piper_sm89_d128_specialization",
+        "is_causal": arguments.causal,
         "quality_gate": {
             "maximum_sqnr_loss_db": _MAXIMUM_SQNR_LOSS_DB,
             "maximum_saturation_fraction_increase": _MAXIMUM_SATURATION_INCREASE,

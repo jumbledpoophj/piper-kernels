@@ -106,7 +106,8 @@ conversion in the hot loop. FP32 also remains the softmax and denominator coordi
 The quality-gated SM89/D128 long-context specialization stores scale coordinates in FP16.
 At 8K and 32K it reconstructs the probability multiplier from the already-loaded coordinate
 and buffers both bounded PV numerator halves in FP16. At 128K it retains one FP32 half and one
-FP16 half, uses a two-stage loop and keeps the probability multiplier in FP32. Its conservative
+FP16 half and keeps the probability multiplier in FP32. The non-causal path uses a two-stage
+loop, while the causal path uses a measured three-stage loop. Its conservative
 bit-linear log-scale bound avoids a second hot-loop metadata stream without saturating UINT8
 probability codes. Magic-biased integer MMA accumulators also remove the two PV tiles' scalar
 INT32-to-FP32 conversions. The 128K preparation path retains full-sequence K/V centering so the
@@ -138,11 +139,13 @@ operation through unsupported WGMMA and therefore uses the slow portable quantiz
 reference. Native ROCm mixed-sign lowering remains future work.
 
 Aligned non-causal SM89 self-attention with D128 and sequence length at least 8K uses a
-dedicated kernel and separate fused Q/K/V preprocessing kernel. The fused preprocessing
-reproduces the unfused quantized tensors and metadata exactly. Production retains per-key V
+dedicated kernel and separate fused Q/K/V preprocessing kernel. The 128K causal specialization
+reuses that split-PV recurrence, launches the longest CTAs first, and separates the mask-free
+prefix from the two causal boundary tiles. The fused preprocessing reproduces the unfused
+quantized tensors and metadata while leaving causal V uncentered. Production retains per-key V
 scaling and probability rounding; shared-64-key V scaling and truncation remain offline
-ablation choices because they do not clear the relative quality gate. Causal attention and
-all other shapes continue to use the generic kernel.
+ablation choices because they do not clear the relative quality gate. Other shapes continue to
+use the generic kernel.
 
 Piper Attention is an independently developed Sage-derived design. The per-key
 quantizer, centering identity, and online-softmax lineage are not claimed as novel in

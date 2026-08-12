@@ -350,6 +350,7 @@ def _quantize_sm89_d128_query_key_value_kernel(
     use_shared_value_scale: tl.constexpr,
     derive_value_scale_multiplier: tl.constexpr,
     store_value_scale_coordinate: tl.constexpr,
+    is_causal: tl.constexpr,
     heads: tl.constexpr,
     block_n: tl.constexpr,
 ):
@@ -485,8 +486,10 @@ def _quantize_sm89_d128_query_key_value_kernel(
         mask=valid[:, None],
         other=0.0,
     ).to(tl.float32)
-    value_mean = tl.load(value_mean_ptr + batch_head * head_dim + offsets_d)
-    value = tl.where(valid[:, None], value - value_mean[None, :], 0.0)
+    if not is_causal:
+        value_mean = tl.load(value_mean_ptr + batch_head * head_dim + offsets_d)
+        value = value - value_mean[None, :]
+    value = tl.where(valid[:, None], value, 0.0)
     value_scale = tl.max(tl.abs(value), axis=1) / _V_INT8_RANGE + _SCALE_EPSILON
     if use_shared_value_scale:
         shared_value_scale = tl.max(value_scale, axis=0)
@@ -591,7 +594,9 @@ def _piper_sm89_d128_tile(  # noqa: PLR0912, PLR0915
     start_n,
     offsets_n,
     offsets_d,
+    offsets_m,
     key_length,
+    diagonal_or_tail: tl.constexpr,
     use_shared_value_scale: tl.constexpr,
     scaled_fp16_numerator: tl.constexpr,
     derive_value_scale_multiplier: tl.constexpr,
@@ -600,7 +605,7 @@ def _piper_sm89_d128_tile(  # noqa: PLR0912, PLR0915
     use_packed_probability_conversion: tl.constexpr,
     block_n: tl.constexpr,
 ):
-    """Advance one branch-minimal, non-causal SM89 D128 key tile."""
+    """Advance one branch-minimal SM89 D128 prefix or causal-boundary tile."""
     head_dim: tl.constexpr = 128
     half_head_dim: tl.constexpr = 64
     current_n = start_n + offsets_n
@@ -610,6 +615,9 @@ def _piper_sm89_d128_tile(  # noqa: PLR0912, PLR0915
     integer_scores = tl.dot(query, key, out_dtype=tl.int32)
     key_scale = tl.load(key_scale_ptr + batch_head * key_length + current_n)
     scores = integer_scores.to(tl.float32) * query_scale[:, None] * key_scale[None, :]
+    if diagonal_or_tail:
+        valid_keys = (current_n[None, :] < key_length) & (current_n[None, :] <= offsets_m[:, None])
+        scores = tl.where(valid_keys, scores, -float("inf"))
 
     if use_shared_value_scale:
         block_max = tl.max(scores, axis=1) - _P_UINT8_LOG2_RANGE
@@ -635,6 +643,8 @@ def _piper_sm89_d128_tile(  # noqa: PLR0912, PLR0915
     else:
         current_weight = tl.exp2(block_max - next_max)
         probabilities = tl.exp2(scores - block_max[:, None])
+        if diagonal_or_tail:
+            probabilities = tl.where(valid_keys, probabilities, 0.0)
         denominator = denominator * old_weight + tl.sum(probabilities, axis=1) * current_weight
 
     if use_shared_value_scale:
@@ -719,7 +729,7 @@ def _piper_sm89_d128_tile(  # noqa: PLR0912, PLR0915
 
 
 @triton.jit
-def _piper_attention_sm89_d128_kernel(
+def _piper_attention_sm89_d128_kernel(  # noqa: PLR0912, PLR0915
     query_ptr,
     key_ptr,
     value_ptr,
@@ -731,22 +741,26 @@ def _piper_attention_sm89_d128_kernel(
     output_ptr,
     query_length,
     key_length,
+    is_causal: tl.constexpr,
     use_shared_value_scale: tl.constexpr,
     scaled_fp16_numerator: tl.constexpr,
     derive_value_scale_multiplier: tl.constexpr,
     use_hybrid_fp32_fp16_numerator: tl.constexpr,
     round_probability_codes: tl.constexpr,
     use_packed_probability_conversion: tl.constexpr,
+    reverse_causal_blocks: tl.constexpr,
     loop_num_stages: tl.constexpr,
     loop_licm: tl.constexpr,
     heads: tl.constexpr,
     block_m: tl.constexpr,
     block_n: tl.constexpr,
 ):
-    """Dedicated aligned non-causal SM89 D128 attention kernel."""
+    """Dedicated aligned SM89 D128 attention kernel."""
     head_dim: tl.constexpr = 128
     half_head_dim: tl.constexpr = 64
     query_block = tl.program_id(0)
+    if is_causal and reverse_causal_blocks:
+        query_block = tl.num_programs(0) - 1 - query_block
     head = tl.program_id(1)
     batch = tl.program_id(2)
     batch_head = batch * heads + head
@@ -769,38 +783,115 @@ def _piper_attention_sm89_d128_kernel(
     denominator = tl.zeros((block_m,), dtype=tl.float32)
     running_max = tl.full((block_m,), -float("inf"), dtype=tl.float32)
 
-    for start_n in tl.range(
-        0,
-        key_length,
-        block_n,
-        num_stages=loop_num_stages,
-        disable_licm=not loop_licm,
-    ):
-        accumulator_low, accumulator_high, denominator, running_max = _piper_sm89_d128_tile(
-            query,
-            query_scale,
-            key_ptr,
-            value_ptr,
-            key_scale_ptr,
-            value_scale_multiplier_ptr,
-            value_scale_coordinate_ptr,
-            accumulator_low,
-            accumulator_high,
-            denominator,
-            running_max,
-            batch_head,
-            start_n,
-            offsets_n,
-            offsets_d,
+    if is_causal:
+        # Following FlashAttention's staged causal structure, keep the long
+        # prefix mask-free and pay elementwise masking only in the two tiles
+        # that overlap this 128-row query block.
+        prefix_end = query_block * block_m
+        end_n = (query_block + 1) * block_m
+        for start_n in tl.range(
+            0,
+            prefix_end,
+            block_n,
+            num_stages=loop_num_stages,
+            disable_licm=not loop_licm,
+        ):
+            accumulator_low, accumulator_high, denominator, running_max = _piper_sm89_d128_tile(
+                query,
+                query_scale,
+                key_ptr,
+                value_ptr,
+                key_scale_ptr,
+                value_scale_multiplier_ptr,
+                value_scale_coordinate_ptr,
+                accumulator_low,
+                accumulator_high,
+                denominator,
+                running_max,
+                batch_head,
+                start_n,
+                offsets_n,
+                offsets_d,
+                offsets_m,
+                key_length,
+                diagonal_or_tail=False,
+                use_shared_value_scale=use_shared_value_scale,
+                scaled_fp16_numerator=scaled_fp16_numerator,
+                derive_value_scale_multiplier=derive_value_scale_multiplier,
+                use_hybrid_fp32_fp16_numerator=use_hybrid_fp32_fp16_numerator,
+                round_probability_codes=round_probability_codes,
+                use_packed_probability_conversion=use_packed_probability_conversion,
+                block_n=block_n,
+            )
+        for start_n in tl.range(
+            prefix_end,
+            end_n,
+            block_n,
+            num_stages=loop_num_stages,
+            disable_licm=not loop_licm,
+        ):
+            accumulator_low, accumulator_high, denominator, running_max = _piper_sm89_d128_tile(
+                query,
+                query_scale,
+                key_ptr,
+                value_ptr,
+                key_scale_ptr,
+                value_scale_multiplier_ptr,
+                value_scale_coordinate_ptr,
+                accumulator_low,
+                accumulator_high,
+                denominator,
+                running_max,
+                batch_head,
+                start_n,
+                offsets_n,
+                offsets_d,
+                offsets_m,
+                key_length,
+                diagonal_or_tail=True,
+                use_shared_value_scale=use_shared_value_scale,
+                scaled_fp16_numerator=scaled_fp16_numerator,
+                derive_value_scale_multiplier=derive_value_scale_multiplier,
+                use_hybrid_fp32_fp16_numerator=use_hybrid_fp32_fp16_numerator,
+                round_probability_codes=round_probability_codes,
+                use_packed_probability_conversion=use_packed_probability_conversion,
+                block_n=block_n,
+            )
+    else:
+        for start_n in tl.range(
+            0,
             key_length,
-            use_shared_value_scale=use_shared_value_scale,
-            scaled_fp16_numerator=scaled_fp16_numerator,
-            derive_value_scale_multiplier=derive_value_scale_multiplier,
-            use_hybrid_fp32_fp16_numerator=use_hybrid_fp32_fp16_numerator,
-            round_probability_codes=round_probability_codes,
-            use_packed_probability_conversion=use_packed_probability_conversion,
-            block_n=block_n,
-        )
+            block_n,
+            num_stages=loop_num_stages,
+            disable_licm=not loop_licm,
+        ):
+            accumulator_low, accumulator_high, denominator, running_max = _piper_sm89_d128_tile(
+                query,
+                query_scale,
+                key_ptr,
+                value_ptr,
+                key_scale_ptr,
+                value_scale_multiplier_ptr,
+                value_scale_coordinate_ptr,
+                accumulator_low,
+                accumulator_high,
+                denominator,
+                running_max,
+                batch_head,
+                start_n,
+                offsets_n,
+                offsets_d,
+                offsets_m,
+                key_length,
+                diagonal_or_tail=False,
+                use_shared_value_scale=use_shared_value_scale,
+                scaled_fp16_numerator=scaled_fp16_numerator,
+                derive_value_scale_multiplier=derive_value_scale_multiplier,
+                use_hybrid_fp32_fp16_numerator=use_hybrid_fp32_fp16_numerator,
+                round_probability_codes=round_probability_codes,
+                use_packed_probability_conversion=use_packed_probability_conversion,
+                block_n=block_n,
+            )
 
     denominator_safe = tl.maximum(denominator, 1e-30)[:, None]
     if scaled_fp16_numerator:
@@ -819,8 +910,9 @@ def _piper_attention_sm89_d128_kernel(
         output_high = accumulator_high / denominator_safe
     offsets_vd = tl.arange(0, half_head_dim)
     value_mean_base = value_mean_ptr + batch_head * head_dim
-    output_low += tl.load(value_mean_base + offsets_vd)[None, :]
-    output_high += tl.load(value_mean_base + half_head_dim + offsets_vd)[None, :]
+    if not is_causal:
+        output_low += tl.load(value_mean_base + offsets_vd)[None, :]
+        output_high += tl.load(value_mean_base + half_head_dim + offsets_vd)[None, :]
     output_base = output_ptr + (batch_head * query_length + offsets_m[:, None]) * head_dim
     tl.store(output_base + offsets_vd[None, :], output_low)
     tl.store(output_base + half_head_dim + offsets_vd[None, :], output_high)
@@ -1318,8 +1410,7 @@ def _prepare_piper_attention(
     if plan.reverse_causal_blocks and not is_causal:
         raise ValueError("reverse block order requires causal attention")
     if plan.use_sm89_d128_specialization and (
-        is_causal
-        or query.device.type != "cuda"
+        query.device.type != "cuda"
         or not AcceleratorTarget.from_device(query.device).is_cuda_capability(8, 9)
         or head_dim != 128
         or query.shape[2] != key_length
@@ -1328,7 +1419,7 @@ def _prepare_piper_attention(
         or key_length % _BLOCK_N != 0
     ):
         raise ValueError(
-            "SM89 D128 specialization requires non-causal aligned SM89 self-attention "
+            "SM89 D128 specialization requires aligned SM89 self-attention "
             "with head_dim=128 and sequence length at least 8192"
         )
     if plan.native_uint8:
@@ -1442,6 +1533,7 @@ def _prepare_piper_attention(
             use_shared_value_scale=plan.use_shared_value_scale,
             derive_value_scale_multiplier=plan.derive_value_scale_multiplier,
             store_value_scale_coordinate=not plan.use_hybrid_fp32_fp16_numerator,
+            is_causal=is_causal,
             heads=heads,
             block_n=_BLOCK_N,
             num_warps=4,
@@ -1543,12 +1635,14 @@ def _launch_piper_attention(prepared: _PreparedPiperAttention) -> torch.Tensor:
             prepared.output,
             query_length,
             prepared.key_length,
+            is_causal=prepared.is_causal,
             use_shared_value_scale=plan.use_shared_value_scale,
             scaled_fp16_numerator=plan.scaled_fp16_numerator,
             derive_value_scale_multiplier=plan.derive_value_scale_multiplier,
             use_hybrid_fp32_fp16_numerator=plan.use_hybrid_fp32_fp16_numerator,
             round_probability_codes=plan.round_probability_codes,
             use_packed_probability_conversion=plan.use_packed_probability_conversion,
+            reverse_causal_blocks=plan.reverse_causal_blocks,
             loop_num_stages=plan.loop_num_stages,
             loop_licm=plan.loop_licm,
             heads=heads,

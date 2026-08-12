@@ -26,6 +26,7 @@ def test_validator_defaults_cover_all_requested_shapes_and_multiple_seeds() -> N
     assert tuple(arguments.sequences) == (8192, 32768, 131072)
     assert tuple(arguments.seeds) == (0, 1, 2)
     assert arguments.heads == 8
+    assert not arguments.causal
     _validate_args(arguments)
 
 

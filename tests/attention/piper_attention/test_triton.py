@@ -286,18 +286,19 @@ def _sqnr_db(actual: torch.Tensor, reference: torch.Tensor) -> float:
 
 @pytest.mark.skipif(not _sm89_available(), reason="specialization targets SM89")
 @pytest.mark.parametrize(
-    ("sequence", "seed"),
-    [(8192, 0), (8192, 1), (8192, 2), (131072, 0)],
+    ("sequence", "seed", "is_causal"),
+    [(8192, 0, False), (8192, 1, False), (8192, 2, False), (131072, 0, False), (131072, 0, True)],
 )
 def test_sm89_production_specialization_clears_relative_quality_gate(
     sequence: int,
     seed: int,
+    is_causal: bool,
 ) -> None:
     torch.manual_seed(seed)
     query = torch.randn(1, 1, sequence, 128, device="cuda", dtype=torch.bfloat16)
     key = torch.randn_like(query)
     value = torch.randn_like(query)
-    specialized_plan = _default_piper_attention_execution_plan(query, key, False)
+    specialized_plan = _default_piper_attention_execution_plan(query, key, is_causal)
     generic_plan = replace(
         specialized_plan,
         use_sm89_d128_specialization=False,
@@ -321,7 +322,7 @@ def test_sm89_production_specialization_clears_relative_quality_gate(
             key,
             value,
             128**-0.5,
-            False,
+            is_causal,
             execution_plan=specialized_plan,
         )
         generic = _run_piper_attention(
@@ -329,10 +330,15 @@ def test_sm89_production_specialization_clears_relative_quality_gate(
             key,
             value,
             128**-0.5,
-            False,
+            is_causal,
             execution_plan=generic_plan,
         )
-        reference = torch.nn.functional.scaled_dot_product_attention(query, key, value)
+        reference = torch.nn.functional.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            is_causal=is_causal,
+        )
 
     assert torch.isfinite(specialized).all()
     assert _sqnr_db(specialized, reference) >= _sqnr_db(generic, reference) - 0.5
@@ -396,6 +402,43 @@ def test_causal_triton_is_independent_of_future_value_rows() -> None:
     torch.testing.assert_close(
         original[:, :, :32],
         changed[:, :, :32],
+        atol=0.0,
+        rtol=0.0,
+    )
+
+
+@pytest.mark.skipif(not _sm89_available(), reason="specialization targets SM89")
+def test_sm89_128k_causal_specialization_is_independent_of_future_value_rows() -> None:
+    torch.manual_seed(620)
+    query = torch.randn(1, 1, 131072, 128, device="cuda", dtype=torch.bfloat16)
+    key = torch.randn_like(query)
+    value = torch.randn_like(query)
+    changed_value = value.clone()
+    changed_value[:, :, 128:] = torch.randn_like(changed_value[:, :, 128:]) * 32
+    plan = _default_piper_attention_execution_plan(query, key, True)
+
+    assert plan.use_sm89_d128_specialization
+    with torch.no_grad():
+        original = _run_piper_attention(
+            query,
+            key,
+            value,
+            128**-0.5,
+            True,
+            execution_plan=plan,
+        )
+        changed = _run_piper_attention(
+            query,
+            key,
+            changed_value,
+            128**-0.5,
+            True,
+            execution_plan=plan,
+        )
+
+    torch.testing.assert_close(
+        original[:, :, :128],
+        changed[:, :, :128],
         atol=0.0,
         rtol=0.0,
     )
