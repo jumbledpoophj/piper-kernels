@@ -15,6 +15,7 @@ from piper_kernels._triton.mixed_int8 import (
     install_uint8_int8_dot_hook,
     rewrite_uint8_int8_dot_llvm,
     uint8_int8_dot,
+    uint8_int8_dot_magic_float,
 )
 from piper_kernels._triton.targets import AcceleratorTarget
 
@@ -36,6 +37,18 @@ def _uint8_int8_dot_kernel(lhs_ptr, rhs_ptr, output_ptr):
     lhs = tl.load(lhs_ptr + offsets_m[:, None] * 64 + offsets_k[None, :])
     rhs = tl.load(rhs_ptr + offsets_k[:, None] * 64 + offsets_n[None, :])
     output = uint8_int8_dot(lhs, rhs)
+    tl.store(output_ptr + offsets_m[:, None] * 64 + offsets_n[None, :], output)
+
+
+@triton.jit
+def _uint8_int8_dot_magic_float_kernel(lhs_ptr, rhs_ptr, output_ptr):
+    offsets_m = tl.arange(0, 64)
+    offsets_n = tl.arange(0, 64)
+    offsets_k = tl.arange(0, 64)
+    lhs = tl.load(lhs_ptr + offsets_m[:, None] * 64 + offsets_k[None, :])
+    rhs = tl.load(rhs_ptr + offsets_k[:, None] * 64 + offsets_n[None, :])
+    biased = uint8_int8_dot_magic_float(lhs, rhs)
+    output = biased - 12582912.0
     tl.store(output_ptr + offsets_m[:, None] * 64 + offsets_n[None, :], output)
 
 
@@ -213,6 +226,30 @@ def test_uint8_int8_dot_is_exact_above_signed_range() -> None:
 
     expected = lhs.cpu().to(torch.int32) @ rhs.cpu().to(torch.int32)
     torch.testing.assert_close(output.cpu(), expected, atol=0, rtol=0)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not _NVIDIA_GPU_AVAILABLE, reason="requires an NVIDIA GPU")
+def test_magic_biased_uint8_int8_dot_converts_exactly_to_float32() -> None:
+    if not AcceleratorTarget.from_device(torch.device("cuda")).supports_uint8_int8_mma:
+        pytest.skip("requires Piper Attention's supported MMAv2 lowering")
+    generator = torch.Generator(device="cuda").manual_seed(913)
+    lhs = torch.randint(0, 256, (64, 64), device="cuda", dtype=torch.uint8, generator=generator)
+    rhs = torch.randint(
+        -128,
+        128,
+        (64, 64),
+        device="cuda",
+        dtype=torch.int8,
+        generator=generator,
+    )
+    output = torch.empty((64, 64), device="cuda", dtype=torch.float32)
+
+    install_uint8_int8_dot_hook()
+    _uint8_int8_dot_magic_float_kernel[(1,)](lhs, rhs, output, num_warps=4)
+
+    expected = lhs.cpu().to(torch.int32) @ rhs.cpu().to(torch.int32)
+    torch.testing.assert_close(output.cpu(), expected.to(torch.float32), atol=0, rtol=0)
 
 
 @pytest.mark.gpu

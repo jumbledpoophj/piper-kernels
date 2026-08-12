@@ -106,9 +106,12 @@ conversion in the hot loop. FP32 also remains the softmax and denominator coordi
 The quality-gated SM89/D128 long-context specialization stores scale coordinates in FP16.
 At 8K and 32K it reconstructs the probability multiplier from the already-loaded coordinate
 and buffers both bounded PV numerator halves in FP16. At 128K it retains one FP32 half and one
-FP16 half, reducing register spills while staying within the relative quality gate. The 128K
-preparation path estimates the centering coordinate from 65,536 evenly spaced rows, cutting the
-statistics pass in half while retaining the same multi-seed quality gate.
+FP16 half, uses a two-stage loop and keeps the probability multiplier in FP32. Its conservative
+bit-linear log-scale bound avoids a second hot-loop metadata stream without saturating UINT8
+probability codes. Magic-biased integer MMA accumulators also remove the two PV tiles' scalar
+INT32-to-FP32 conversions. The 128K preparation path retains full-sequence K/V centering so the
+faster hot loop preserves the production relative-SQNR gate across both single-head and
+multi-head inputs.
 
 For centered V, Piper Attention uses the exact identity
 

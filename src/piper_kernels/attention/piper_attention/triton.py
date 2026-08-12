@@ -22,6 +22,7 @@ from triton.tools.tensor_descriptor import TensorDescriptor
 from piper_kernels._triton.mixed_int8 import (
     install_uint8_int8_dot_hook,
     uint8_int8_dot,
+    uint8_int8_dot_magic_float,
 )
 from piper_kernels._triton.targets import AcceleratorTarget
 from piper_kernels.attention.kernels.qk_quantization.int8.sage import (
@@ -42,6 +43,7 @@ _P_ZERO_POINT = tl.constexpr(128)
 _V_INT8_RANGE = tl.constexpr(127.0)
 _SCALE_EPSILON = tl.constexpr(1e-7)
 _LOG2_E = tl.constexpr(1.4426950408889634)
+_INT_DOT_MAGIC_FLOAT = tl.constexpr(12582912.0)
 
 
 @triton.jit
@@ -347,6 +349,7 @@ def _quantize_sm89_d128_query_key_value_kernel(
     stride_vok,
     use_shared_value_scale: tl.constexpr,
     derive_value_scale_multiplier: tl.constexpr,
+    store_value_scale_coordinate: tl.constexpr,
     heads: tl.constexpr,
     block_n: tl.constexpr,
 ):
@@ -499,11 +502,12 @@ def _quantize_sm89_d128_query_key_value_kernel(
                 value_scale * _P_UINT8_RANGE,
                 mask=valid,
             )
-        tl.store(
-            value_scale_coordinate_ptr + batch_head * key_length + offsets_n,
-            tl.log2(value_scale),
-            mask=valid,
-        )
+        if store_value_scale_coordinate:
+            tl.store(
+                value_scale_coordinate_ptr + batch_head * key_length + offsets_n,
+                tl.log2(value_scale),
+                mask=valid,
+            )
         value_quantized = qk_quantization.round_to_int8(value / value_scale[:, None])
     tl.store(
         value_output_ptr
@@ -610,7 +614,18 @@ def _piper_sm89_d128_tile(  # noqa: PLR0912, PLR0915
     if use_shared_value_scale:
         block_max = tl.max(scores, axis=1) - _P_UINT8_LOG2_RANGE
     else:
-        value_log_scale = tl.load(value_scale_coordinate_ptr + batch_head * key_length + current_n)
+        if use_hybrid_fp32_fp16_numerator:
+            value_scale_multiplier = tl.load(
+                value_scale_multiplier_ptr + batch_head * key_length + current_n
+            )
+            multiplier_bits = value_scale_multiplier.to(tl.int32, bitcast=True)
+            value_log_scale = multiplier_bits.to(tl.float32) * (1.0 / 8388608.0) - (
+                127.0 + _P_UINT8_LOG2_RANGE - 0.0860713320559342
+            )
+        else:
+            value_log_scale = tl.load(
+                value_scale_coordinate_ptr + batch_head * key_length + current_n
+            )
         block_max = tl.max(scores + value_log_scale[None, :], axis=1)
     next_max = tl.maximum(running_max, block_max)
     old_weight = tl.exp2(running_max - next_max)
@@ -627,7 +642,7 @@ def _piper_sm89_d128_tile(  # noqa: PLR0912, PLR0915
     else:
         if derive_value_scale_multiplier:
             value_scale_multiplier = tl.exp2(value_log_scale.to(tl.float32)) * _P_UINT8_RANGE
-        else:
+        elif not use_hybrid_fp32_fp16_numerator:
             value_scale_multiplier = tl.load(
                 value_scale_multiplier_ptr + batch_head * key_length + current_n
             )
@@ -645,8 +660,24 @@ def _piper_sm89_d128_tile(  # noqa: PLR0912, PLR0915
     value_high = tl.load(
         value_ptr + value_base + (half_head_dim + offsets_vd[None, :]) * key_length
     )
-    partial_low = uint8_int8_dot(probability_uint8, value_low)
-    partial_high = uint8_int8_dot(probability_uint8, value_high)
+    if use_hybrid_fp32_fp16_numerator:
+        partial_low = uint8_int8_dot_magic_float(probability_uint8, value_low)
+        partial_high = uint8_int8_dot_magic_float(probability_uint8, value_high)
+        low_factor = (1.0 / _P_UINT8_RANGE) * current_weight[:, None]
+        partial_low_update = tl.fma(
+            partial_low,
+            low_factor,
+            -_INT_DOT_MAGIC_FLOAT * low_factor,
+        )
+        high_factor = (1.0 / 65536.0) * current_weight[:, None]
+        partial_high_update = tl.fma(
+            partial_high,
+            high_factor,
+            -_INT_DOT_MAGIC_FLOAT * high_factor,
+        ).to(tl.float16)
+    else:
+        partial_low = uint8_int8_dot(probability_uint8, value_low)
+        partial_high = uint8_int8_dot(probability_uint8, value_high)
     if use_shared_value_scale:
         coordinate_block = batch_head * tl.cdiv(key_length, block_n) + start_n // block_n
         block_scale = tl.load(value_scale_coordinate_ptr + coordinate_block)
@@ -667,20 +698,13 @@ def _piper_sm89_d128_tile(  # noqa: PLR0912, PLR0915
         partial_high_update = (partial_high.to(tl.float32) * (1.0 / 65536.0)).to(
             tl.float16
         ) * current_weight[:, None].to(tl.float16)
-    else:
+    elif not use_hybrid_fp32_fp16_numerator:
         partial_low_update = (
             partial_low.to(tl.float32) * (1.0 / _P_UINT8_RANGE) * current_weight[:, None]
         )
-        if use_hybrid_fp32_fp16_numerator:
-            partial_high_update = (partial_high.to(tl.float32) * (1.0 / 65536.0)).to(
-                tl.float16
-            ) * current_weight[:, None].to(tl.float16)
-        else:
-            partial_high_update = (
-                partial_high.to(tl.float32)
-                * (1.0 / _P_UINT8_RANGE)
-                * current_weight[:, None]
-            )
+        partial_high_update = (
+            partial_high.to(tl.float32) * (1.0 / _P_UINT8_RANGE) * current_weight[:, None]
+        )
     if scaled_fp16_numerator:
         old_weight_update = old_weight[:, None].to(tl.float16)
     else:
@@ -1357,14 +1381,18 @@ def _prepare_piper_attention(
             dtype=(torch.float16 if plan.use_fp16_value_scale else torch.float32),
         )
     )
-    value_log_scale = torch.empty(
-        (
-            (batch, heads, int(triton.cdiv(key_length, _BLOCK_N)))
-            if plan.use_shared_value_scale
-            else (batch, heads, key_length)
-        ),
-        device=value.device,
-        dtype=torch.float32 if plan.use_shared_value_scale else torch.float16,
+    value_log_scale = (
+        torch.empty((1,), device=value.device, dtype=torch.float16)
+        if plan.use_hybrid_fp32_fp16_numerator
+        else torch.empty(
+            (
+                (batch, heads, int(triton.cdiv(key_length, _BLOCK_N)))
+                if plan.use_shared_value_scale
+                else (batch, heads, key_length)
+            ),
+            device=value.device,
+            dtype=torch.float32 if plan.use_shared_value_scale else torch.float16,
+        )
     )
     value_correction = (
         torch.empty(
@@ -1413,6 +1441,7 @@ def _prepare_piper_attention(
             value_int8.stride(3),
             use_shared_value_scale=plan.use_shared_value_scale,
             derive_value_scale_multiplier=plan.derive_value_scale_multiplier,
+            store_value_scale_coordinate=not plan.use_hybrid_fp32_fp16_numerator,
             heads=heads,
             block_n=_BLOCK_N,
             num_warps=4,

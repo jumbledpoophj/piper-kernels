@@ -74,6 +74,26 @@ def uint8_int8_dot(lhs, rhs):
     return _mark_uint8_int8_dot(result)
 
 
+@triton.jit
+def uint8_int8_dot_magic_float(lhs, rhs):
+    """Emit UINT8-by-INT8 dot as a magic-biased binary32 value without I2FP.
+
+    A 1.5 * 2**23 integer bias places every possible 64-term U8*S8 dot
+    result in the unit-spaced region of binary32. The MMA accumulator adds the
+    bias for free; bitcasting and subtracting the corresponding float recovers
+    the exact dot result.
+    """
+    tl.static_assert(lhs.dtype == tl.uint8, "uint8_int8_dot requires a UINT8 lhs")
+    tl.static_assert(rhs.dtype == tl.int8, "uint8_int8_dot requires an INT8 rhs")
+    tl.static_assert(lhs.shape[1] == 64, "magic-biased dot requires exactly 64 terms")
+    lhs_bits = lhs.to(tl.int8)
+    bias_bits: tl.constexpr = 0x4B400000
+    accumulator = tl.full((lhs.shape[0], rhs.shape[1]), bias_bits, dtype=tl.int32)
+    biased = tl.dot(lhs_bits, rhs, acc=accumulator, out_dtype=tl.int32)
+    biased = _mark_uint8_int8_dot(biased)
+    return biased.to(tl.float32, bitcast=True)
+
+
 def _mma_accumulator_dependencies(line: str) -> list[str]:
     """Return only the four tied accumulator inputs of an MMAv2 inline-asm call."""
     try:

@@ -146,14 +146,14 @@ def select_execution_plan(
         split_pv_head_dim=split_pv_head_dim,
         scaled_fp16_numerator=scaled_fp16_numerator,
         use_tensor_descriptors=use_tensor_descriptors,
-        num_stages=(
-            1
-            if use_sm89_d128_specialization
-            else 2
-            if use_tensor_descriptors
+        num_stages=(1 if use_sm89_d128_specialization else 2 if use_tensor_descriptors else 3),
+        loop_num_stages=(
+            2
+            if use_sm89_d128_specialization and key_length >= 131072
             else 3
+            if use_sm89_d128_specialization
+            else None
         ),
-        loop_num_stages=(3 if use_sm89_d128_specialization else None),
         loop_licm=use_sm89_d128_specialization and key_length < 131072,
         use_packed_probability_conversion=use_packed_probability_conversion,
         use_sm89_d128_specialization=use_sm89_d128_specialization,
@@ -162,15 +162,9 @@ def select_execution_plan(
         # ablation axes, but both lose more than 0.5 dB on the SM89 corpus.
         use_shared_value_scale=False,
         use_fused_kv_preprocessing=use_sm89_d128_specialization,
-        use_fp16_value_scale=use_sm89_d128_specialization,
-        derive_value_scale_multiplier=(
-            use_sm89_d128_specialization and key_length < 131072
-        ),
-        use_hybrid_fp32_fp16_numerator=(
-            use_sm89_d128_specialization and key_length >= 131072
-        ),
-        use_strided_kv_mean_sample=(
-            use_sm89_d128_specialization and key_length == 131072
-        ),
+        use_fp16_value_scale=(use_sm89_d128_specialization and key_length < 131072),
+        derive_value_scale_multiplier=(use_sm89_d128_specialization and key_length < 131072),
+        use_hybrid_fp32_fp16_numerator=(use_sm89_d128_specialization and key_length >= 131072),
+        use_strided_kv_mean_sample=False,
         round_probability_codes=True,
     )

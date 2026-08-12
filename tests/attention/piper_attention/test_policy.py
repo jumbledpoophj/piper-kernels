@@ -145,13 +145,13 @@ def test_sm89_specialization_is_exactly_scoped(
         assert plan.use_packed_probability_conversion
         assert not plan.use_shared_value_scale
         assert plan.use_fused_kv_preprocessing
-        assert plan.use_fp16_value_scale
+        assert plan.use_fp16_value_scale is (key_length < 131072)
         assert plan.derive_value_scale_multiplier is (key_length < 131072)
         assert plan.use_hybrid_fp32_fp16_numerator is (key_length >= 131072)
-        assert plan.use_strided_kv_mean_sample is (key_length == 131072)
+        assert not plan.use_strided_kv_mean_sample
         assert plan.round_probability_codes
         assert plan.num_stages == 1
-        assert plan.loop_num_stages == 3
+        assert plan.loop_num_stages == (2 if key_length >= 131072 else 3)
         assert plan.loop_licm is (key_length < 131072)
 
 
