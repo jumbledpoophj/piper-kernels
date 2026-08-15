@@ -81,9 +81,11 @@ def _generic_plan(
     *,
     packed_probability: bool,
 ) -> _policy.PiperAttentionExecutionPlan:
-    """Recover the current-main generic SM89 path for a fair control."""
+    """Recover the current-upstream generic SM89 path for a fair control."""
+    is_causal = production_plan.optimize_causal_traversal
     return replace(
         production_plan,
+        block_m=64 if is_causal else 128,
         use_sm89_d128_specialization=False,
         use_shared_value_scale=False,
         use_fused_kv_preprocessing=False,
@@ -91,10 +93,12 @@ def _generic_plan(
         derive_value_scale_multiplier=False,
         use_hybrid_fp32_fp16_numerator=False,
         use_strided_kv_mean_sample=False,
-        split_pv_head_dim=False,
+        split_pv_head_dim=not is_causal,
         scaled_fp16_numerator=False,
-        loop_num_stages=None,
-        loop_licm=False,
+        num_stages=3 if is_causal else 1,
+        optimize_causal_traversal=False,
+        loop_num_stages=None if is_causal else 3,
+        loop_licm=not is_causal,
         use_packed_probability_conversion=packed_probability,
         round_probability_codes=True,
     )
@@ -357,7 +361,11 @@ def _evaluate_inputs(
     is_causal: bool,
 ) -> list[dict[str, Any]]:
     query, key, _value = inputs
-    production_plan = piper_backend._default_piper_attention_execution_plan(query, key, is_causal)
+    production_plan = piper_backend._default_piper_attention_execution_plan(
+        query,
+        is_causal,
+        key_length=key.shape[2],
+    )
     if not production_plan.use_sm89_d128_specialization:
         raise RuntimeError("workload did not select the SM89 D128 specialization")
     generic_plan = _generic_plan(production_plan, packed_probability=False)
@@ -451,8 +459,8 @@ def _main(argv: Sequence[str] | None = None) -> None:
             if seed == arguments.seeds[0] and not arguments.skip_timing:
                 production_plan = piper_backend._default_piper_attention_execution_plan(
                     inputs[0],
-                    inputs[1],
                     arguments.causal,
+                    key_length=inputs[1].shape[2],
                 )
                 timing_candidates = (
                     _ablation_plans(production_plan)

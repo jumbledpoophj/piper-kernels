@@ -41,12 +41,29 @@ from piper_kernels._triton.targets import AcceleratorTarget
 from piper_kernels.attention.piper_attention import _policy as piper_attention_policy
 from piper_kernels.attention.piper_attention import triton as piper_attention_backend
 
-_validate_args = validate_attention_tuning_arguments
+
+def _validate_args(arguments: argparse.Namespace) -> None:
+    """Validate shared attention controls and Piper-only causal traversal."""
+    validate_attention_tuning_arguments(arguments)
+    if not arguments.causal and arguments.optimize_causal_traversal is True:
+        raise SystemExit("optimized causal traversal requires causal attention")
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    add_attention_tuning_arguments(parser)
+    add_attention_tuning_arguments(parser, include_reverse_causal_blocks=False)
+    parser.add_argument(
+        "--derive-value-log-bound",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="derive the V log-scale bound from its FP32 multiplier; omitted retains production",
+    )
+    parser.add_argument(
+        "--optimize-causal-traversal",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="use reverse CTA order with an unmasked prefix and masked boundary",
+    )
     parser.add_argument(
         "--use-sm89-d128-specialization",
         action=argparse.BooleanOptionalAction,
@@ -95,7 +112,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _candidate_plans(  # noqa: PLR0912, PLR0915 - normalizes dependent plan axes
+def _candidate_plans(  # noqa: PLR0912 - normalizes dependent plan axes
     args: argparse.Namespace,
     production_plan: piper_attention_policy.PiperAttentionExecutionPlan,
 ) -> tuple[piper_attention_policy.PiperAttentionExecutionPlan, ...]:
@@ -104,36 +121,28 @@ def _candidate_plans(  # noqa: PLR0912, PLR0915 - normalizes dependent plan axes
         tuning_axis(args.block_m, production_plan.block_m),
         tuning_axis(args.num_warps, production_plan.num_warps),
         tuning_axis(args.num_stages, production_plan.num_stages),
-        boolean_tuning_axis(
-            args.use_tensor_descriptors,
-            production_plan.use_tensor_descriptors,
-        ),
-        boolean_tuning_axis(
-            args.reverse_causal_blocks,
-            production_plan.reverse_causal_blocks,
-        ),
+        boolean_tuning_axis(args.use_tensor_descriptors, production_plan.use_tensor_descriptors),
         tuning_axis(args.loop_num_stages, production_plan.loop_num_stages),
         boolean_tuning_axis(args.loop_licm, production_plan.loop_licm),
         boolean_tuning_axis(
             args.use_packed_probability_conversion,
             production_plan.use_packed_probability_conversion,
         ),
+        boolean_tuning_axis(args.derive_value_log_bound, production_plan.derive_value_log_bound),
+        boolean_tuning_axis(
+            args.optimize_causal_traversal,
+            production_plan.optimize_causal_traversal,
+        ),
         boolean_tuning_axis(
             args.use_sm89_d128_specialization,
             production_plan.use_sm89_d128_specialization,
         ),
-        boolean_tuning_axis(
-            args.use_shared_value_scale,
-            production_plan.use_shared_value_scale,
-        ),
+        boolean_tuning_axis(args.use_shared_value_scale, production_plan.use_shared_value_scale),
         boolean_tuning_axis(
             args.use_fused_kv_preprocessing,
             production_plan.use_fused_kv_preprocessing,
         ),
-        boolean_tuning_axis(
-            args.use_fp16_value_scale,
-            production_plan.use_fp16_value_scale,
-        ),
+        boolean_tuning_axis(args.use_fp16_value_scale, production_plan.use_fp16_value_scale),
         boolean_tuning_axis(
             args.derive_value_scale_multiplier,
             production_plan.derive_value_scale_multiplier,
@@ -146,125 +155,88 @@ def _candidate_plans(  # noqa: PLR0912, PLR0915 - normalizes dependent plan axes
             args.use_strided_kv_mean_sample,
             production_plan.use_strided_kv_mean_sample,
         ),
-        boolean_tuning_axis(
-            args.scaled_fp16_numerator,
-            production_plan.scaled_fp16_numerator,
-        ),
-        boolean_tuning_axis(
-            args.round_probability_codes,
-            production_plan.round_probability_codes,
-        ),
+        boolean_tuning_axis(args.scaled_fp16_numerator, production_plan.scaled_fp16_numerator),
+        boolean_tuning_axis(args.round_probability_codes, production_plan.round_probability_codes),
     )
     plans: list[piper_attention_policy.PiperAttentionExecutionPlan] = []
-    for (
-        block_m,
-        num_warps,
-        num_stages,
-        use_tensor_descriptors,
-        reverse_causal_blocks,
-        loop_num_stages,
-        loop_licm,
-        use_packed_probability_conversion,
-        use_sm89_d128_specialization,
-        use_shared_value_scale,
-        use_fused_kv_preprocessing,
-        use_fp16_value_scale,
-        derive_value_scale_multiplier,
-        use_hybrid_fp32_fp16_numerator,
-        use_strided_kv_mean_sample,
-        scaled_fp16_numerator,
-        round_probability_codes,
-    ) in product(*axes):
-        candidate_shared_value_scale = use_shared_value_scale
-        candidate_fused_kv_preprocessing = use_fused_kv_preprocessing
-        candidate_fp16_value_scale = use_fp16_value_scale
-        candidate_derive_value_scale_multiplier = derive_value_scale_multiplier
-        candidate_hybrid_numerator = use_hybrid_fp32_fp16_numerator
-        candidate_strided_mean_sample = use_strided_kv_mean_sample
-        candidate_scaled_fp16_numerator = scaled_fp16_numerator
-        candidate_round_probability_codes = round_probability_codes
-        candidate_loop_num_stages = loop_num_stages
-        candidate_loop_licm = loop_licm
-        if candidate_shared_value_scale and args.use_fp16_value_scale is None:
-            candidate_fp16_value_scale = False
+    for values in product(*axes):
+        (
+            block_m,
+            num_warps,
+            num_stages,
+            use_tensor_descriptors,
+            loop_num_stages,
+            loop_licm,
+            use_packed_probability_conversion,
+            derive_value_log_bound,
+            optimize_causal_traversal,
+            use_sm89_d128_specialization,
+            use_shared_value_scale,
+            use_fused_kv_preprocessing,
+            use_fp16_value_scale,
+            derive_value_scale_multiplier,
+            use_hybrid_fp32_fp16_numerator,
+            use_strided_kv_mean_sample,
+            scaled_fp16_numerator,
+            round_probability_codes,
+        ) = values
+        if use_shared_value_scale and args.use_fp16_value_scale is None:
+            use_fp16_value_scale = False
         if (
-            candidate_shared_value_scale
-            or not candidate_fused_kv_preprocessing
-            or not candidate_fp16_value_scale
+            use_shared_value_scale or not use_fused_kv_preprocessing or not use_fp16_value_scale
         ) and args.derive_value_scale_multiplier is None:
-            candidate_derive_value_scale_multiplier = False
-        if candidate_hybrid_numerator and args.scaled_fp16_numerator is None:
-            candidate_scaled_fp16_numerator = False
-        if candidate_scaled_fp16_numerator and args.use_hybrid_fp32_fp16_numerator is None:
-            candidate_hybrid_numerator = False
-        if not use_sm89_d128_specialization and production_plan.use_sm89_d128_specialization:
+            derive_value_scale_multiplier = False
+        if use_hybrid_fp32_fp16_numerator and args.scaled_fp16_numerator is None:
+            scaled_fp16_numerator = False
+        if scaled_fp16_numerator and args.use_hybrid_fp32_fp16_numerator is None:
+            use_hybrid_fp32_fp16_numerator = False
+
+        if not use_sm89_d128_specialization:
             if args.use_shared_value_scale is None:
-                candidate_shared_value_scale = False
+                use_shared_value_scale = False
             if args.use_fused_kv_preprocessing is None:
-                candidate_fused_kv_preprocessing = False
+                use_fused_kv_preprocessing = False
             if args.use_fp16_value_scale is None:
-                candidate_fp16_value_scale = False
+                use_fp16_value_scale = False
             if args.derive_value_scale_multiplier is None:
-                candidate_derive_value_scale_multiplier = False
+                derive_value_scale_multiplier = False
             if args.use_hybrid_fp32_fp16_numerator is None:
-                candidate_hybrid_numerator = False
+                use_hybrid_fp32_fp16_numerator = False
             if args.use_strided_kv_mean_sample is None:
-                candidate_strided_mean_sample = False
+                use_strided_kv_mean_sample = False
             if args.scaled_fp16_numerator is None:
-                candidate_scaled_fp16_numerator = False
+                scaled_fp16_numerator = False
             if args.round_probability_codes is None:
-                candidate_round_probability_codes = True
-            if args.loop_num_stages is None:
-                candidate_loop_num_stages = None
-            if args.loop_licm is None:
-                candidate_loop_licm = False
-        if (
-            production_plan.use_sm89_d128_specialization
-            and not use_sm89_d128_specialization
-            and (
-                candidate_shared_value_scale
-                or candidate_fused_kv_preprocessing
-                or candidate_fp16_value_scale
-                or candidate_derive_value_scale_multiplier
-                or candidate_hybrid_numerator
-                or candidate_strided_mean_sample
-                or candidate_scaled_fp16_numerator
-                or not candidate_round_probability_codes
-            )
-        ):
-            continue
+                round_probability_codes = True
+        elif args.derive_value_log_bound is None:
+            derive_value_log_bound = False
+
         try:
             plan = replace(
                 production_plan,
                 block_m=block_m,
                 num_warps=num_warps,
                 num_stages=num_stages,
-                use_tensor_descriptors=use_tensor_descriptors,
-                reverse_causal_blocks=reverse_causal_blocks,
-                loop_num_stages=candidate_loop_num_stages,
-                loop_licm=candidate_loop_licm,
+                use_tensor_descriptors=False
+                if use_sm89_d128_specialization and args.use_tensor_descriptors is None
+                else use_tensor_descriptors,
+                loop_num_stages=loop_num_stages,
+                loop_licm=loop_licm,
                 use_packed_probability_conversion=use_packed_probability_conversion,
-                use_sm89_d128_specialization=use_sm89_d128_specialization,
-                use_shared_value_scale=candidate_shared_value_scale,
-                use_fused_kv_preprocessing=candidate_fused_kv_preprocessing,
-                use_fp16_value_scale=candidate_fp16_value_scale,
-                derive_value_scale_multiplier=candidate_derive_value_scale_multiplier,
-                use_hybrid_fp32_fp16_numerator=candidate_hybrid_numerator,
-                use_strided_kv_mean_sample=candidate_strided_mean_sample,
+                derive_value_log_bound=derive_value_log_bound,
+                optimize_causal_traversal=optimize_causal_traversal,
                 split_pv_head_dim=(
-                    use_sm89_d128_specialization
-                    if production_plan.use_sm89_d128_specialization
-                    else production_plan.split_pv_head_dim
+                    True if use_sm89_d128_specialization else production_plan.split_pv_head_dim
                 ),
-                scaled_fp16_numerator=(
-                    candidate_scaled_fp16_numerator
-                    if (
-                        use_sm89_d128_specialization
-                        or not production_plan.use_sm89_d128_specialization
-                    )
-                    else False
-                ),
-                round_probability_codes=candidate_round_probability_codes,
+                scaled_fp16_numerator=scaled_fp16_numerator,
+                use_sm89_d128_specialization=use_sm89_d128_specialization,
+                use_shared_value_scale=use_shared_value_scale,
+                use_fused_kv_preprocessing=use_fused_kv_preprocessing,
+                use_fp16_value_scale=use_fp16_value_scale,
+                derive_value_scale_multiplier=derive_value_scale_multiplier,
+                use_hybrid_fp32_fp16_numerator=use_hybrid_fp32_fp16_numerator,
+                use_strided_kv_mean_sample=use_strided_kv_mean_sample,
+                round_probability_codes=round_probability_codes,
             )
         except ValueError:
             continue
@@ -277,9 +249,10 @@ def _candidate_plans(  # noqa: PLR0912, PLR0915 - normalizes dependent plan axes
 def _plan_name(plan: piper_attention_policy.PiperAttentionExecutionPlan) -> str:
     load_path = "descriptor" if plan.use_tensor_descriptors else "pointer"
     loop_stages = plan.loop_num_stages if plan.loop_num_stages is not None else "default"
-    block_order = "reverse" if plan.reverse_causal_blocks else "forward"
     licm = "licm" if plan.loop_licm else "no-licm"
     probability_conversion = "packed-p" if plan.use_packed_probability_conversion else "stock-p"
+    value_metadata = "derived-vlog" if plan.derive_value_log_bound else "stored-vlog"
+    causal_traversal = "optimized-causal" if plan.optimize_causal_traversal else "monolithic"
     kernel = "sm89-d128" if plan.use_sm89_d128_specialization else "generic"
     value_scale = "shared-v64" if plan.use_shared_value_scale else "per-key-v"
     accumulator = "split-fp16" if plan.scaled_fp16_numerator else "fp32"
@@ -293,7 +266,8 @@ def _plan_name(plan: piper_attention_policy.PiperAttentionExecutionPlan) -> str:
     probability_rounding = "round-p" if plan.round_probability_codes else "truncate-p"
     return (
         f"{kernel}-{load_path}-m{plan.block_m}-w{plan.num_warps}-s{plan.num_stages}-"
-        f"{block_order}-loop{loop_stages}-{licm}-{probability_conversion}-"
+        f"loop{loop_stages}-{licm}-{probability_conversion}-{value_metadata}-"
+        f"{causal_traversal}-"
         f"{value_scale}-{value_scale_storage}-{value_scale_load}-{numerator}-{preprocessing}-"
         f"{mean_preprocessing}-"
         f"{probability_rounding}"
@@ -380,8 +354,8 @@ def _main(argv: Sequence[str] | None = None) -> None:
     query, key, _ = inputs
     production_plan = piper_attention_backend._default_piper_attention_execution_plan(
         query,
-        key,
         args.causal,
+        key_length=key.shape[2],
         target=target,
     )
     candidates = tuple(

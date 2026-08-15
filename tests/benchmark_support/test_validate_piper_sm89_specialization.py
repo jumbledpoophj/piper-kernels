@@ -12,7 +12,6 @@ from piper_kernels.attention.piper_attention._policy import select_execution_pla
 def _production_plan():
     return select_execution_plan(
         AcceleratorTarget(backend="cuda", architecture="sm89"),
-        candidate_block_m=128,
         query_length=8192,
         key_length=8192,
         head_dim=128,
@@ -34,7 +33,7 @@ def test_generic_control_disables_every_specialized_axis() -> None:
     plan = _generic_plan(_production_plan(), packed_probability=False)
 
     assert not plan.use_sm89_d128_specialization
-    assert not plan.split_pv_head_dim
+    assert plan.split_pv_head_dim
     assert not plan.scaled_fp16_numerator
     assert not plan.use_shared_value_scale
     assert not plan.use_fused_kv_preprocessing
@@ -44,6 +43,8 @@ def test_generic_control_disables_every_specialized_axis() -> None:
     assert not plan.use_strided_kv_mean_sample
     assert not plan.use_packed_probability_conversion
     assert plan.round_probability_codes
+    assert plan.loop_num_stages == 3
+    assert plan.loop_licm
 
 
 def test_ablation_matrix_separates_requested_variables() -> None:
