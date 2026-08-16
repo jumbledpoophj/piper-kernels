@@ -653,9 +653,16 @@ def _piper_sm89_d128_tile(  # noqa: PLR0912, PLR0915
     value_high = tl.load(
         value_ptr + value_base + (half_head_dim + offsets_vd[None, :]) * key_length
     )
-    if use_hybrid_fp32_fp16_numerator:
+    # The per-key FP32 recurrence can consume the MMA accumulator through the
+    # same exact magic-biased bitcast as the hybrid recurrence. Keep the
+    # scaled-FP16 and shared-scale paths on their measured INT32 conversion.
+    if use_hybrid_fp32_fp16_numerator or (not scaled_fp16_numerator and not use_shared_value_scale):
         partial_low = uint8_int8_dot_magic_float(probability_uint8, value_low)
         partial_high = uint8_int8_dot_magic_float(probability_uint8, value_high)
+    else:
+        partial_low = uint8_int8_dot(probability_uint8, value_low)
+        partial_high = uint8_int8_dot(probability_uint8, value_high)
+    if use_hybrid_fp32_fp16_numerator:
         low_factor = (1.0 / _P_UINT8_RANGE) * current_weight[:, None]
         partial_low_update = tl.fma(
             partial_low,
@@ -668,9 +675,6 @@ def _piper_sm89_d128_tile(  # noqa: PLR0912, PLR0915
             high_factor,
             -_INT_DOT_MAGIC_FLOAT * high_factor,
         ).to(tl.float16)
-    else:
-        partial_low = uint8_int8_dot(probability_uint8, value_low)
-        partial_high = uint8_int8_dot(probability_uint8, value_high)
     if use_shared_value_scale:
         coordinate_block = batch_head * tl.cdiv(key_length, block_n) + start_n // block_n
         block_scale = tl.load(value_scale_coordinate_ptr + coordinate_block)
@@ -692,11 +696,16 @@ def _piper_sm89_d128_tile(  # noqa: PLR0912, PLR0915
             tl.float16
         ) * current_weight[:, None].to(tl.float16)
     elif not use_hybrid_fp32_fp16_numerator:
-        partial_low_update = (
-            partial_low.to(tl.float32) * (1.0 / _P_UINT8_RANGE) * current_weight[:, None]
+        factor = (1.0 / _P_UINT8_RANGE) * current_weight[:, None]
+        partial_low_update = tl.fma(
+            partial_low,
+            factor,
+            -_INT_DOT_MAGIC_FLOAT * factor,
         )
-        partial_high_update = (
-            partial_high.to(tl.float32) * (1.0 / _P_UINT8_RANGE) * current_weight[:, None]
+        partial_high_update = tl.fma(
+            partial_high,
+            factor,
+            -_INT_DOT_MAGIC_FLOAT * factor,
         )
     if scaled_fp16_numerator:
         old_weight_update = old_weight[:, None].to(tl.float16)
@@ -1494,13 +1503,11 @@ def _prepare_piper_attention(  # noqa: PLR0912 - explicit preparation-plan branc
         or not AcceleratorTarget.from_device(query.device).is_cuda_capability(8, 9)
         or head_dim != 128
         or query.shape[2] != key_length
-        or query.shape[2] < 8192
         or query.shape[2] % plan.block_m != 0
         or key_length % _BLOCK_N != 0
     ):
         raise ValueError(
-            "SM89 D128 specialization requires aligned SM89 self-attention "
-            "with head_dim=128 and sequence length at least 8192"
+            "SM89 D128 specialization requires aligned SM89 self-attention with head_dim=128"
         )
     with torch.cuda.device(query.device):
         install_uint8_int8_dot_hook()

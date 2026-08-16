@@ -105,7 +105,7 @@ def test_provider_metadata_distinguishes_algorithms_and_controls() -> None:
     assert not providers[PYTORCH_SDPA].triton_jit_functions
 
 
-def test_sm89_long_piper_provider_registers_only_specialized_kernels() -> None:
+def test_sm89_aligned_piper_provider_registers_only_specialized_kernels() -> None:
     tensor = torch.empty((1, 8, 8192, 128), device="meta", dtype=torch.bfloat16)
     provider = make_attention_providers(
         (tensor, tensor, tensor),
@@ -116,8 +116,9 @@ def test_sm89_long_piper_provider_registers_only_specialized_kernels() -> None:
 
     assert provider.configuration["use_sm89_d128_specialization"]
     assert provider.configuration["use_fused_kv_preprocessing"]
-    assert provider.configuration["use_fp16_value_scale"]
-    assert provider.configuration["derive_value_scale_multiplier"]
+    assert not provider.configuration["use_fp16_value_scale"]
+    assert not provider.configuration["derive_value_scale_multiplier"]
+    assert provider.configuration["use_hybrid_fp32_fp16_numerator"]
     assert not provider.configuration["use_strided_kv_mean_sample"]
     assert "quantize-sm89-d128-query-key-value" in provider.triton_jit_functions
     assert "quantize-query-per-thread" not in provider.triton_jit_functions

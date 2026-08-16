@@ -57,7 +57,7 @@ def test_ablation_matrix_separates_requested_variables() -> None:
         "dedicated-packed-per-key-fp32-acc-fp32-scale-unfused-round",
         "dedicated-packed-per-key-fp32-acc-fp16-scale-unfused-round",
         "dedicated-packed-per-key-split-fp16-fp16-scale-unfused-round",
-        "dedicated-packed-per-key-production-acc-fp16-scale-fused-loaded-round",
+        "dedicated-packed-per-key-split-fp16-acc-fp16-scale-fused-derived-round",
         "production",
         "dedicated-packed-shared-v64-production-acc-fp32-scale-fused-round",
         "dedicated-packed-per-key-production-acc-fp16-scale-fused-truncate",
@@ -75,9 +75,10 @@ def test_ablation_matrix_separates_requested_variables() -> None:
         "dedicated-packed-per-key-split-fp16-fp16-scale-unfused-round"
     ].scaled_fp16_numerator
     assert plans["production"].use_fused_kv_preprocessing
-    assert plans["production"].derive_value_scale_multiplier
-    assert not plans[
-        "dedicated-packed-per-key-production-acc-fp16-scale-fused-loaded-round"
+    assert plans["production"].use_hybrid_fp32_fp16_numerator
+    assert not plans["production"].derive_value_scale_multiplier
+    assert plans[
+        "dedicated-packed-per-key-split-fp16-acc-fp16-scale-fused-derived-round"
     ].derive_value_scale_multiplier
     assert plans[
         "dedicated-packed-shared-v64-production-acc-fp32-scale-fused-round"

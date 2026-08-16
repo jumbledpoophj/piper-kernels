@@ -73,6 +73,10 @@ class PiperAttentionExecutionPlan:
             raise ValueError("hybrid numerator accumulation requires the FP32 recurrence path")
         if self.use_hybrid_fp32_fp16_numerator and self.use_shared_value_scale:
             raise ValueError("hybrid numerator accumulation requires per-key V scaling")
+        if self.use_hybrid_fp32_fp16_numerator and self.use_fp16_value_scale:
+            raise ValueError("hybrid numerator accumulation requires FP32 V-scale storage")
+        if self.use_hybrid_fp32_fp16_numerator and self.derive_value_scale_multiplier:
+            raise ValueError("hybrid numerator accumulation requires loaded V-scale multipliers")
         if self.use_strided_kv_mean_sample and not self.use_sm89_d128_specialization:
             raise ValueError("strided K/V mean sampling requires the SM89 D128 specialization")
         if not self.round_probability_codes and not self.use_sm89_d128_specialization:
@@ -120,10 +124,7 @@ def _sm89_execution_plan(
         and query_length % 128 == 0
         and key_length % 64 == 0
     )
-    specialized = aligned_d128 and (
-        (not is_causal and query_length >= 8192) or (is_causal and query_length == 131072)
-    )
-    if not specialized:
+    if not aligned_d128:
         return PiperAttentionExecutionPlan(
             block_m=64 if is_causal else 128,
             grouped_qk=False,
@@ -135,23 +136,23 @@ def _sm89_execution_plan(
             use_packed_probability_conversion=noncausal_d128,
         )
 
-    assert query_length is not None
     return PiperAttentionExecutionPlan(
         block_m=128,
         grouped_qk=False,
         split_pv_head_dim=True,
         use_tensor_descriptors=False,
         optimize_causal_traversal=is_causal,
+        num_warps=4,
         num_stages=1,
-        loop_num_stages=3 if is_causal else 2 if query_length >= 131072 else 3,
-        loop_licm=not is_causal and query_length < 131072,
+        loop_num_stages=3,
+        loop_licm=not is_causal,
         use_packed_probability_conversion=True,
-        scaled_fp16_numerator=not is_causal and query_length < 131072,
+        scaled_fp16_numerator=False,
         use_sm89_d128_specialization=True,
         use_fused_kv_preprocessing=True,
-        use_fp16_value_scale=query_length < 131072,
-        derive_value_scale_multiplier=query_length < 131072,
-        use_hybrid_fp32_fp16_numerator=query_length >= 131072,
+        use_fp16_value_scale=False,
+        derive_value_scale_multiplier=False,
+        use_hybrid_fp32_fp16_numerator=True,
     )
 
 

@@ -264,6 +264,7 @@ def test_sm89_fused_kv_preprocessing_matches_unfused(
         use_shared_value_scale=use_shared_value_scale,
         use_fp16_value_scale=not use_shared_value_scale,
         derive_value_scale_multiplier=False,
+        use_hybrid_fp32_fp16_numerator=False,
     )
 
     with torch.no_grad():
@@ -348,7 +349,19 @@ def test_sm89_packed_probability_conversion_matches_stock(
 @pytest.mark.skipif(not _sm89_available(), reason="specialization targets SM89")
 @pytest.mark.parametrize(
     ("sequence", "seed", "is_causal"),
-    [(8192, 0, False), (8192, 1, False), (8192, 2, False), (131072, 0, False), (131072, 0, True)],
+    [
+        (2048, 0, False),
+        (2048, 0, True),
+        (8192, 0, False),
+        (8192, 1, False),
+        (8192, 2, False),
+        (8192, 0, True),
+        (12288, 0, False),
+        (12288, 0, True),
+        (32768, 0, True),
+        (131072, 0, False),
+        (131072, 0, True),
+    ],
 )
 def test_sm89_production_specialization_clears_relative_quality_gate(
     sequence: int,

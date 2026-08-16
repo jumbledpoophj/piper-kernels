@@ -105,15 +105,12 @@ FP32 on the generic path so every finite FP16 input scale is representable witho
 conversion in the hot loop. The generic online-softmax state, denominator, and PV numerator
 remain FP32; its numerator stays in UINT8 probability-code units during the recurrence, and
 the common factor of 255 is removed once in the output epilogue.
-The quality-gated SM89/D128 long-context specialization stores scale coordinates in FP16.
-At 8K and 32K it reconstructs the probability multiplier from the already-loaded coordinate
-and buffers both bounded PV numerator halves in FP16. At 128K it retains one FP32 half and one
-FP16 half and keeps the probability multiplier in FP32. The non-causal path uses a two-stage
-loop, while the causal path uses a measured three-stage loop. Its conservative
-bit-linear log-scale bound avoids a second hot-loop metadata stream without saturating UINT8
-probability codes. Magic-biased integer MMA accumulators also remove the two PV tiles' scalar
-INT32-to-FP32 conversions. The 128K preparation path retains full-sequence K/V centering so the
-faster hot loop preserves the production relative-SQNR gate across both single-head and
+The quality-gated aligned SM89/D128 specialization uses one FP32 and one FP16 PV numerator
+half plus FP32 per-key V multipliers at every token length. Its conservative bit-linear
+log-scale bound derives the hot-loop coordinate from that multiplier without a second metadata
+stream or UINT8 probability-code saturation. Magic-biased integer MMA accumulators also remove
+the two PV tiles' scalar INT32-to-FP32 conversions. Full-sequence K/V centering remains exact so
+the faster hot loop preserves the production relative-SQNR gate across both single-head and
 multi-head inputs.
 
 For centered V, Piper Attention uses the exact identity
@@ -138,14 +135,15 @@ the MMAv2 instruction rewritten by the packaged extension. Exact SM120 uses pack
 four-code probability conversion for D64 and non-causal D128, while causal D128 retains
 the faster stock conversion. SM89 and exact SM120 have measured schedules; other
 supported targets use the generic schedule. Production plan selection depends on target, head
-dimension, and causal mode, not sequence length. Hopper lowers the operation through
+dimension, causal mode, and alignment, not token length. Hopper lowers the operation through
 unsupported WGMMA and therefore uses the slow portable quantized reference. Native ROCm
 mixed-sign lowering remains future work.
 
-Aligned non-causal SM89 self-attention with D128 and sequence length at least 8K uses a
-dedicated kernel and separate fused Q/K/V preprocessing kernel. The 128K causal specialization
-reuses that split-PV recurrence, launches the longest CTAs first, and separates the mask-free
-prefix from the two causal boundary tiles. The fused preprocessing reproduces the unfused
+Aligned SM89/D128 self-attention uses a dedicated kernel and separate fused Q/K/V preprocessing
+kernel at every 128-token-aligned length. Causal execution launches the longest CTAs first and
+separates the mask-free prefix from the two causal boundary tiles. Both modes use four warps,
+one outer stage, and a three-stage loop; non-causal enables loop-invariant-code motion while
+causal leaves it disabled. The fused preprocessing reproduces the unfused
 quantized tensors and metadata while leaving causal V uncentered. Production retains per-key V
 scaling and probability rounding; shared-64-key V scaling and truncation remain offline
 ablation choices because they do not clear the relative quality gate. Other shapes continue to

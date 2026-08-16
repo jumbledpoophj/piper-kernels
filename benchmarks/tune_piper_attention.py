@@ -190,6 +190,10 @@ def _candidate_plans(  # noqa: PLR0912 - normalizes dependent plan axes
             scaled_fp16_numerator = False
         if scaled_fp16_numerator and args.use_hybrid_fp32_fp16_numerator is None:
             use_hybrid_fp32_fp16_numerator = False
+        if (
+            use_shared_value_scale or use_fp16_value_scale or derive_value_scale_multiplier
+        ) and args.use_hybrid_fp32_fp16_numerator is None:
+            use_hybrid_fp32_fp16_numerator = False
 
         if not use_sm89_d128_specialization:
             if args.use_shared_value_scale is None:
@@ -258,9 +262,7 @@ def _plan_name(plan: piper_attention_policy.PiperAttentionExecutionPlan) -> str:
     accumulator = "split-fp16" if plan.scaled_fp16_numerator else "fp32"
     preprocessing = "fused-qkv" if plan.use_fused_kv_preprocessing else "stock-prep"
     value_scale_storage = "fp16-vscale" if plan.use_fp16_value_scale else "fp32-vscale"
-    value_scale_load = (
-        "derived-vscale" if plan.derive_value_scale_multiplier else "loaded-vscale"
-    )
+    value_scale_load = "derived-vscale" if plan.derive_value_scale_multiplier else "loaded-vscale"
     numerator = "hybrid-acc" if plan.use_hybrid_fp32_fp16_numerator else accumulator
     mean_preprocessing = "sampled-mean" if plan.use_strided_kv_mean_sample else "exact-mean"
     probability_rounding = "round-p" if plan.round_probability_codes else "truncate-p"

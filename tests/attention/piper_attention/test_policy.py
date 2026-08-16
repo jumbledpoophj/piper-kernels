@@ -250,15 +250,19 @@ def test_sm89_does_not_inherit_sage_attention_schedule() -> None:
 @pytest.mark.parametrize(
     ("query_length", "key_length", "head_dim", "is_causal", "expected"),
     [
+        (128, 128, 128, False, True),
+        (2048, 2048, 128, True, True),
         (8192, 8192, 128, False, True),
         (32768, 32768, 128, False, True),
         (131072, 131072, 128, False, True),
+        (131200, 131200, 128, True, True),
         (8191, 8191, 128, False, False),
         (8192, 8192, 64, False, False),
         (8192, 16384, 128, False, False),
-        (8192, 8192, 128, True, False),
+        (8192, 8192, 128, True, True),
+        (32768, 32768, 128, True, True),
         (131072, 131072, 128, True, True),
-        (262144, 262144, 128, True, False),
+        (262144, 262144, 128, True, True),
     ],
 )
 def test_sm89_specialization_is_exactly_scoped(
@@ -280,19 +284,39 @@ def test_sm89_specialization_is_exactly_scoped(
     if expected:
         assert plan.block_m == 128
         assert plan.split_pv_head_dim
-        assert plan.scaled_fp16_numerator is (not is_causal and key_length < 131072)
+        assert not plan.scaled_fp16_numerator
         assert plan.use_packed_probability_conversion
         assert plan.optimize_causal_traversal is is_causal
         assert not plan.use_shared_value_scale
         assert plan.use_fused_kv_preprocessing
-        assert plan.use_fp16_value_scale is (key_length < 131072)
-        assert plan.derive_value_scale_multiplier is (key_length < 131072)
-        assert plan.use_hybrid_fp32_fp16_numerator is (key_length >= 131072)
+        assert not plan.use_fp16_value_scale
+        assert not plan.derive_value_scale_multiplier
+        assert plan.use_hybrid_fp32_fp16_numerator
         assert not plan.use_strided_kv_mean_sample
         assert plan.round_probability_codes
+        assert plan.num_warps == 4
         assert plan.num_stages == 1
-        assert plan.loop_num_stages == (3 if is_causal or key_length < 131072 else 2)
-        assert plan.loop_licm is (not is_causal and key_length < 131072)
+        assert plan.loop_num_stages == 3
+        assert plan.loop_licm is (not is_causal)
+
+
+@pytest.mark.parametrize("is_causal", [False, True])
+def test_sm89_d128_specialization_is_token_length_invariant(
+    is_causal: bool,
+) -> None:
+    lengths = (128, 2048, 8192, 12288, 32768, 65536, 131072, 262144)
+    plans = [
+        _select(
+            _SM89,
+            query_length=sequence,
+            key_length=sequence,
+            head_dim=128,
+            is_causal=is_causal,
+        )
+        for sequence in lengths
+    ]
+
+    assert all(plan == plans[0] for plan in plans[1:])
 
 
 def test_unmeasured_sm12x_target_does_not_inherit_sm120_causal_policy() -> None:
@@ -379,6 +403,8 @@ def test_execution_plan_rejects_optimized_traversal_for_noncausal_invocation() -
         {"use_fp16_value_scale": True},
         {"derive_value_scale_multiplier": True},
         {"use_hybrid_fp32_fp16_numerator": True},
+        {"use_hybrid_fp32_fp16_numerator": True, "use_fp16_value_scale": True},
+        {"use_hybrid_fp32_fp16_numerator": True, "derive_value_scale_multiplier": True},
         {"use_strided_kv_mean_sample": True},
         {"round_probability_codes": False},
     ],

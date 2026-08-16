@@ -129,12 +129,13 @@ separate CTA-count heuristic. Default production plan selection depends only on 
 head dimension, and causal mode—not query or key length. Smaller tiles and alternate metadata paths
 remain available to the offline tuners.
 
-Treat 8K, 32K, and 128K as evidence for one continuous plan rather than dispatch keys. Prefer a
+Treat 8K, 32K, and 128K as evidence for one continuous plan rather than dispatch keys. Use H16
+at all three anchors and H48 only at 8K and 32K; do not run the H48/128K cell. Prefer a
 length-invariant policy whenever the algorithm is valid across the range; sampled anchors alone do
 not justify a threshold or a square-only specialization. If a future implementation has an
 unavoidable applicability or material performance boundary, probe immediately below and above it
-plus an irregular interior length. Performance selection starts at 8K; use the 2K guard only to
-reject pathological short-context behavior, not to create another crossover.
+plus an irregular interior length. Include the 2K guard to reject pathological short-context
+behavior, but do not use it or the larger anchors to create a token-length crossover.
 
 Tail correctness and long-context performance need different coverage. Exercise tile boundaries
 cheaply with small square lengths such as `63`, `64`, `65`, `127`, `128`, `129`, and `193`.
@@ -198,8 +199,11 @@ versus packed probability conversion, per-key versus shared-64-key V scaling, FP
 split-FP16 numerator accumulation, FP32 versus FP16 per-key scale storage, fused versus
 unfused Q/K/V preprocessing, loaded versus reconstructed per-key multipliers, hybrid
 FP32/FP16 accumulation, exact versus strided-sampled K/V means, and probability rounding versus
-truncation. The specialized fields are rejected outside their exact non-causal aligned
-SM89/D128 long-context scope.
+truncation. The specialized fields are rejected outside aligned SM89/D128 self-attention; the
+production specialization itself has no token-length threshold or anchor-specific transition.
+The complete rationale, retained configuration, SM89 results, non-anchor continuity checks, and
+reproduction commands are collected in
+[SM89_PIPER_UNIVERSAL_TUNING.md](SM89_PIPER_UNIVERSAL_TUNING.md).
 
 Run the production quality gate and the complete requested ablation matrix with:
 

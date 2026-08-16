@@ -9,17 +9,19 @@ All notable changes to Piper Kernels are documented here. Versions follow the po
 
 - Quality-gated offline ConvRot INT8 forward-linear execution-plan tuning across dynamic
   preparation and GEMM schedules, with stratified large-shape output validation.
-- A non-causal aligned SM89/D128 long-context Piper specialization with a dedicated attention
-  kernel, exact fused Q/K/V preprocessing, packed probability conversion, compact FP16 per-key
-  scale storage, and an independently reproducible multi-seed relative-quality validator.
+- An aligned SM89/D128 Piper specialization with a dedicated attention kernel, exact fused Q/K/V
+  preprocessing, packed probability conversion, and an independently reproducible multi-seed
+  relative-quality validator.
 
 ### Changed
 
-- Piper's SM89 production policy retains per-key V scaling and probability rounding, derives
-  the short-context V multiplier from its loaded FP16 coordinate, uses split-FP16 accumulation
-  at 8K and 32K, and uses a spill-reducing FP32/FP16 hybrid plus a half-sequence strided mean
-  sample at 128K. Every retained configuration clears the 0.5 dB current-main quality gate.
-  Causal and generic attention kernels are unchanged.
+- Piper's aligned SM89/D128 production policy is token-length invariant. Causal and non-causal
+  attention uniformly use four warps, one outer stage, a three-stage loop, per-key FP32 V
+  multipliers, exact K/V means, probability rounding, and a hybrid FP32/FP16 numerator.
+  Non-causal enables loop-invariant-code motion while causal disables it. Magic-biased PV MMA
+  results avoid scalar INT32-to-FP32 conversion. The prior 8K admission threshold and 128K
+  schedule, metadata, and precision transitions have been removed. Every retained configuration
+  clears the 0.5 dB current-main quality gate. Unaligned and generic kernels are unchanged.
 - SM120 Piper causal attention now traverses its mask-free prefix separately from the masked
   diagonal boundary and launches query blocks in reverse order. D128 uniformly uses split PV,
   with two FP32 accumulators for causal and non-causal attention at every sequence length. The
@@ -33,7 +35,8 @@ All notable changes to Piper Kernels are documented here. Versions follow the po
   use mask-free traversal without requiring square attention.
   Production attention plans now start from 128-row query tiles and use explicit target policy for
   the few smaller-tile paths instead of a runtime CTA-count heuristic. Attention tuning guidance
-  standardizes H16/H48 and 8K/32K/128K as measurement anchors rather than exact dispatch shapes.
+  standardizes H16 at 8K/32K/128K and H48 at 8K/32K as measurement anchors rather than exact
+  dispatch shapes; H48/128K is excluded.
   Piper's generic fused Q/K/V preparation candidate has been removed, and its coupled causal
   prefix partition and reverse launch order are now represented by one traversal choice. Causal and
   non-causal key tiles now share one online-softmax recurrence implementation without changing
